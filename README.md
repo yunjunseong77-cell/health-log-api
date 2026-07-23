@@ -43,6 +43,15 @@ docker run --rm -p 8000:8000 -v "${PWD}:/app" health-log-api
 
 컨테이너를 종료해도 SQLite 파일을 유지하려면 현재 폴더를 `/app`에 연결합니다.
 
+## AWS 배포
+
+AWS Lightsail Ubuntu 인스턴스에 Docker 컨테이너로 배포했습니다.
+
+- Swagger API 문서: http://13.124.157.240:8000/docs
+- API 상태 확인: http://13.124.157.240:8000/
+
+> 현재는 학습용 HTTP 배포이며, 실제 서비스에서는 HTTPS와 접근 제어를 추가해야 합니다.
+
 ## API 목록
 
 | Method | Path | 설명 |

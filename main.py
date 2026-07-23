@@ -1,17 +1,91 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import sqlite3
+import json
+from pathlib import Path
 
 
-# FastAPI 앱 생성
-app = FastAPI(title="마이 헬스 로그 API")
+# -----------------------------
+# FastAPI 앱 설정
+# -----------------------------
+
+app = FastAPI(
+    docs_url=None,
+    title="마이 헬스 로그 API",
+    version="1.0.0",
+    description="""
+건강 기록을 저장하고 BMI, 혈압, 혈당을 분석하는 API입니다.
+
+※ 본 API의 건강 분류 기준은 학습용으로 단순화한 기준입니다.
+실제 의학적 진단에 사용하지 마세요.
+""",
+    openapi_tags=[
+        {
+            "name": "건강 기록",
+            "description": "건강 기록을 추가, 조회, 수정, 삭제하는 기능"
+        },
+        {
+            "name": "검색",
+            "description": "날짜 범위로 건강 기록을 검색하는 기능"
+        },
+        {
+            "name": "통계",
+            "description": "저장된 건강 기록의 기본 통계를 확인하는 기능"
+        }
+    ]
+)
 
 
-# 임시 저장 공간
-# 아직은 메모리에만 저장합니다.
-records = []
+# -----------------------------
+# SQLite 설정
+# -----------------------------
+
+DB_FILE = Path(__file__).resolve().parent / "health_records.db"
+JSON_FILE = Path(__file__).resolve().parent / "data.json"
 
 
-# 기록을 입력받을 때 사용할 데이터 형식
+def get_connection():
+    connection = sqlite3.connect(DB_FILE)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_db():
+    connection = get_connection()
+
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            weight REAL NOT NULL,
+            height REAL NOT NULL,
+            systolic INTEGER NOT NULL,
+            diastolic INTEGER NOT NULL,
+            blood_sugar INTEGER NOT NULL,
+            steps INTEGER DEFAULT 0,
+            sleep_hours REAL DEFAULT 0.0,
+            memo TEXT DEFAULT '',
+            bmi REAL NOT NULL,
+            bmi_category TEXT NOT NULL,
+            bp_category TEXT NOT NULL,
+            sugar_category TEXT NOT NULL,
+            warnings TEXT NOT NULL DEFAULT '[]'
+        )
+    """)
+
+    connection.commit()
+    connection.close()
+
+
+init_db()
+
+
+# -----------------------------
+# 입력 데이터 형식
+# -----------------------------
+
 class RecordIn(BaseModel):
     date: str
     weight: float
@@ -23,11 +97,17 @@ class RecordIn(BaseModel):
     sleep_hours: float = 0.0
     memo: str = ""
 
+
+# -----------------------------
+# 건강 분석 함수
+# -----------------------------
+
 def calculate_bmi(weight: float, height: float):
     height_m = height / 100
     bmi = weight / (height_m * height_m)
 
     return round(bmi, 2)
+
 
 def classify_bmi(bmi: float):
     if bmi < 18.5:
@@ -40,49 +120,6 @@ def classify_bmi(bmi: float):
         return "비만"
 
 
-# 기본 주소 확인용
-@app.get("/")
-def read_root():
-    return {
-        "message": "마이 헬스 로그 API"
-    }
-
-
-# 건강 기록 추가
-@app.post("/records")
-def create_record(record: RecordIn):
-    bmi = calculate_bmi(record.weight, record.height)
-    bmi_category = classify_bmi(bmi)
-
-    bp_category = classify_blood_pressure(
-        record.systolic,
-        record.diastolic
-    )
-
-    sugar_category = classify_blood_sugar(
-        record.blood_sugar
-    )
-
-    warnings = make_warnings(
-        bmi_category,
-        bp_category,
-        sugar_category
-    )
-
-    new_record = {
-        "id": len(records) + 1,
-        **record.model_dump(),
-        "bmi": bmi,
-        "bmi_category": bmi_category,
-        "bp_category": bp_category,
-        "sugar_category": sugar_category,
-        "warnings": warnings
-    }
-
-    records.append(new_record)
-
-    return new_record
-
 def classify_blood_pressure(systolic: int, diastolic: int):
     if systolic < 120 and diastolic < 80:
         return "정상"
@@ -91,6 +128,7 @@ def classify_blood_pressure(systolic: int, diastolic: int):
     else:
         return "고혈압"
 
+
 def classify_blood_sugar(blood_sugar: int):
     if blood_sugar < 100:
         return "정상"
@@ -98,6 +136,7 @@ def classify_blood_sugar(blood_sugar: int):
         return "공복혈당장애"
     else:
         return "당뇨 의심"
+
 
 def make_warnings(
     bmi_category: str,
@@ -117,79 +156,873 @@ def make_warnings(
 
     return warnings
 
-# 전체 건강 기록 조회
-@app.get("/records")
-def get_records():
+
+def analyze_record(record: RecordIn):
+    bmi = calculate_bmi(record.weight, record.height)
+    bmi_category = classify_bmi(bmi)
+
+    bp_category = classify_blood_pressure(
+        record.systolic,
+        record.diastolic
+    )
+
+    sugar_category = classify_blood_sugar(
+        record.blood_sugar
+    )
+
+    warnings = make_warnings(
+        bmi_category,
+        bp_category,
+        sugar_category
+    )
+
     return {
-        "count": len(records),
-        "records": records
+        "bmi": bmi,
+        "bmi_category": bmi_category,
+        "bp_category": bp_category,
+        "sugar_category": sugar_category,
+        "warnings": warnings
     }
 
-@app.get("/records/{record_id}")
+
+# SQLite 한 행을 API 응답용 딕셔너리로 변환
+def row_to_record(row):
+    record = dict(row)
+
+    # SQLite에는 문자열로 저장되어 있으므로 리스트로 변환
+    record["warnings"] = json.loads(record["warnings"])
+
+    return record
+
+
+def save_json_snapshot(connection=None):
+    """현재 SQLite 기록을 과제 제출용 JSON 파일로도 저장합니다."""
+    owns_connection = connection is None
+    if owns_connection:
+        connection = get_connection()
+
+    rows = connection.execute(
+        "SELECT * FROM records ORDER BY id"
+    ).fetchall()
+
+    payload = {
+        "count": len(rows),
+        "records": [row_to_record(row) for row in rows]
+    }
+
+    JSON_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    if owns_connection:
+        connection.close()
+
+
+# -----------------------------
+# 기본 주소
+# -----------------------------
+
+@app.get(
+    "/",
+    summary="API 상태 확인",
+    description="마이 헬스 로그 API가 정상적으로 실행 중인지 확인합니다.",
+    tags=["건강 기록"]
+)
+def read_root():
+    return {
+        "message": "마이 헬스 로그 API가 정상적으로 실행 중입니다."
+    }
+
+
+# -----------------------------
+# 건강 기록 추가
+# -----------------------------
+
+@app.post(
+    "/records",
+    summary="건강 기록 추가",
+    description="건강 기록을 SQLite 데이터베이스에 저장하고 건강 상태를 자동으로 분석합니다.",
+    tags=["건강 기록"]
+)
+def create_record(record: RecordIn):
+    analysis = analyze_record(record)
+
+    connection = get_connection()
+
+    cursor = connection.execute(
+        """
+        INSERT INTO records (
+            date,
+            weight,
+            height,
+            systolic,
+            diastolic,
+            blood_sugar,
+            steps,
+            sleep_hours,
+            memo,
+            bmi,
+            bmi_category,
+            bp_category,
+            sugar_category,
+            warnings
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.date,
+            record.weight,
+            record.height,
+            record.systolic,
+            record.diastolic,
+            record.blood_sugar,
+            record.steps,
+            record.sleep_hours,
+            record.memo,
+            analysis["bmi"],
+            analysis["bmi_category"],
+            analysis["bp_category"],
+            analysis["sugar_category"],
+            json.dumps(
+                analysis["warnings"],
+                ensure_ascii=False
+            )
+        )
+    )
+
+    connection.commit()
+
+    new_id = cursor.lastrowid
+
+    row = connection.execute(
+        "SELECT * FROM records WHERE id = ?",
+        (new_id,)
+    ).fetchone()
+
+    save_json_snapshot(connection)
+
+    connection.close()
+
+    return row_to_record(row)
+
+
+# -----------------------------
+# 전체 기록 조회
+# -----------------------------
+
+@app.get(
+    "/records",
+    summary="전체 건강 기록 조회",
+    description="저장된 모든 건강 기록과 전체 개수를 반환합니다.",
+    tags=["건강 기록"]
+)
+def get_records():
+    connection = get_connection()
+
+    rows = connection.execute(
+        "SELECT * FROM records ORDER BY id"
+    ).fetchall()
+
+    connection.close()
+
+    result = [row_to_record(row) for row in rows]
+
+    return {
+        "count": len(result),
+        "records": result
+    }
+
+
+# -----------------------------
+# 특정 기록 조회
+# -----------------------------
+
+@app.get(
+    "/records/{record_id}",
+    summary="특정 건강 기록 조회",
+    description="ID를 이용해 건강 기록 하나를 조회합니다.",
+    tags=["건강 기록"]
+)
 def get_record(record_id: int):
-    for record in records:
-        if record["id"] == record_id:
-            return record
+    connection = get_connection()
 
-    raise HTTPException(
-        status_code=404,
-        detail="해당 기록을 찾을 수 없습니다."
-    )
+    row = connection.execute(
+        "SELECT * FROM records WHERE id = ?",
+        (record_id,)
+    ).fetchone()
 
-@app.delete("/records/{record_id}")
-def delete_record(record_id: int):
-    for index, record in enumerate(records):
-        if record["id"] == record_id:
-            deleted_record = records.pop(index)
+    connection.close()
 
-            return {
-                "message": "기록이 삭제되었습니다.",
-                "record": deleted_record
-            }
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="해당 건강 기록을 찾을 수 없습니다."
+        )
 
-    raise HTTPException(
-        status_code=404,
-        detail="해당 기록을 찾을 수 없습니다."
-    )
+    return row_to_record(row)
 
-@app.put("/records/{record_id}")
+
+# -----------------------------
+# 건강 기록 수정
+# -----------------------------
+
+@app.put(
+    "/records/{record_id}",
+    summary="건강 기록 수정",
+    description="기존 건강 기록을 수정하고 BMI와 건강 분류를 다시 계산합니다.",
+    tags=["건강 기록"]
+)
 def update_record(record_id: int, record: RecordIn):
-    for index, old_record in enumerate(records):
-        if old_record["id"] == record_id:
-            # 수정된 값으로 다시 계산
-            bmi = calculate_bmi(record.weight, record.height)
-            bmi_category = classify_bmi(bmi)
+    analysis = analyze_record(record)
 
-            bp_category = classify_blood_pressure(
-                record.systolic,
-                record.diastolic
-            )
+    connection = get_connection()
 
-            sugar_category = classify_blood_sugar(
-                record.blood_sugar
-            )
+    existing_row = connection.execute(
+        "SELECT * FROM records WHERE id = ?",
+        (record_id,)
+    ).fetchone()
 
-            warnings = make_warnings(
-                bmi_category,
-                bp_category,
-                sugar_category
-            )
+    if existing_row is None:
+        connection.close()
 
-            updated_record = {
-                "id": record_id,
-                **record.model_dump(),
-                "bmi": bmi,
-                "bmi_category": bmi_category,
-                "bp_category": bp_category,
-                "sugar_category": sugar_category,
-                "warnings": warnings
+        raise HTTPException(
+            status_code=404,
+            detail="수정할 건강 기록을 찾을 수 없습니다."
+        )
+
+    connection.execute(
+        """
+        UPDATE records
+        SET
+            date = ?,
+            weight = ?,
+            height = ?,
+            systolic = ?,
+            diastolic = ?,
+            blood_sugar = ?,
+            steps = ?,
+            sleep_hours = ?,
+            memo = ?,
+            bmi = ?,
+            bmi_category = ?,
+            bp_category = ?,
+            sugar_category = ?,
+            warnings = ?
+        WHERE id = ?
+        """,
+        (
+            record.date,
+            record.weight,
+            record.height,
+            record.systolic,
+            record.diastolic,
+            record.blood_sugar,
+            record.steps,
+            record.sleep_hours,
+            record.memo,
+            analysis["bmi"],
+            analysis["bmi_category"],
+            analysis["bp_category"],
+            analysis["sugar_category"],
+            json.dumps(
+                analysis["warnings"],
+                ensure_ascii=False
+            ),
+            record_id
+        )
+    )
+
+    connection.commit()
+
+    updated_row = connection.execute(
+        "SELECT * FROM records WHERE id = ?",
+        (record_id,)
+    ).fetchone()
+
+    save_json_snapshot(connection)
+
+    connection.close()
+
+    return row_to_record(updated_row)
+
+
+# -----------------------------
+# 건강 기록 삭제
+# -----------------------------
+
+@app.delete(
+    "/records/{record_id}",
+    summary="건강 기록 삭제",
+    description="ID를 이용해 건강 기록 하나를 삭제합니다.",
+    tags=["건강 기록"]
+)
+def delete_record(record_id: int):
+    connection = get_connection()
+
+    row = connection.execute(
+        "SELECT * FROM records WHERE id = ?",
+        (record_id,)
+    ).fetchone()
+
+    if row is None:
+        connection.close()
+
+        raise HTTPException(
+            status_code=404,
+            detail="삭제할 건강 기록을 찾을 수 없습니다."
+        )
+
+    connection.execute(
+        "DELETE FROM records WHERE id = ?",
+        (record_id,)
+    )
+
+    connection.commit()
+    save_json_snapshot(connection)
+    connection.close()
+
+    return {
+        "message": "건강 기록이 삭제되었습니다.",
+        "record": row_to_record(row)
+    }
+
+
+# -----------------------------
+# 날짜 범위 검색
+# -----------------------------
+
+@app.get(
+    "/search",
+    summary="날짜 범위로 건강 기록 검색",
+    description="시작 날짜와 종료 날짜 사이의 건강 기록을 검색합니다.",
+    tags=["검색"]
+)
+def search_records(start: str, end: str):
+    connection = get_connection()
+
+    rows = connection.execute(
+        """
+        SELECT * FROM records
+        WHERE date >= ? AND date <= ?
+        ORDER BY date, id
+        """,
+        (start, end)
+    ).fetchall()
+
+    connection.close()
+
+    result = [row_to_record(row) for row in rows]
+
+    return {
+        "start": start,
+        "end": end,
+        "count": len(result),
+        "records": result
+    }
+
+
+# -----------------------------
+# 건강 기록 통계
+# -----------------------------
+
+@app.get(
+    "/stats",
+    summary="건강 기록 통계 조회",
+    description="저장된 기록의 개수, 평균값, 분류별 개수를 반환합니다.",
+    tags=["통계"]
+)
+def get_stats():
+    connection = get_connection()
+
+    summary_row = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS count,
+            COALESCE(AVG(weight), 0) AS average_weight,
+            COALESCE(AVG(bmi), 0) AS average_bmi,
+            COALESCE(AVG(systolic), 0) AS average_systolic,
+            COALESCE(AVG(diastolic), 0) AS average_diastolic,
+            COALESCE(AVG(blood_sugar), 0) AS average_blood_sugar,
+            COALESCE(AVG(steps), 0) AS average_steps,
+            COALESCE(AVG(sleep_hours), 0) AS average_sleep_hours,
+            MIN(date) AS earliest_date,
+            MAX(date) AS latest_date
+        FROM records
+        """
+    ).fetchone()
+
+    def count_by(column):
+        rows = connection.execute(
+            f"SELECT {column} AS category, COUNT(*) AS count FROM records GROUP BY {column}"
+        ).fetchall()
+        return {row["category"]: row["count"] for row in rows}
+
+    result = {
+        "count": summary_row["count"],
+        "averages": {
+            "weight": round(summary_row["average_weight"], 2),
+            "bmi": round(summary_row["average_bmi"], 2),
+            "systolic": round(summary_row["average_systolic"], 2),
+            "diastolic": round(summary_row["average_diastolic"], 2),
+            "blood_sugar": round(summary_row["average_blood_sugar"], 2),
+            "steps": round(summary_row["average_steps"], 2),
+            "sleep_hours": round(summary_row["average_sleep_hours"], 2)
+        },
+        "date_range": {
+            "earliest": summary_row["earliest_date"],
+            "latest": summary_row["latest_date"]
+        },
+        "category_counts": {
+            "bmi": count_by("bmi_category"),
+            "blood_pressure": count_by("bp_category"),
+            "blood_sugar": count_by("sugar_category")
+        }
+    }
+
+    connection.close()
+    return result
+
+
+# -----------------------------
+# 귀여운 건강 기록 대시보드
+# -----------------------------
+
+@app.get("/docs", include_in_schema=False)
+def custom_docs():
+    swagger_page = get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title="마이 헬스 로그 API - 문서",
+        swagger_ui_parameters={"docExpansion": "list"},
+    )
+
+    helper = r'''
+<style>
+#put-helper{display:none;position:fixed;top:85px;right:24px;z-index:99999;width:320px;padding:16px;border:2px solid #ff9f43;border-radius:14px;background:#fff8ef;box-shadow:0 8px 24px #0003;font-family:Arial,sans-serif}
+#put-helper.visible{display:block}
+#put-helper strong{color:#7b4b16;font-size:16px}#put-helper p{font-size:13px;line-height:1.5;color:#5c4630}#put-helper div{display:flex;gap:8px}#put-helper input{width:150px;padding:8px;border:1px solid #d8c2a5;border-radius:8px}#put-helper button{padding:8px 12px;border:0;border-radius:8px;background:#ff9f43;color:white;font-weight:bold;cursor:pointer}#put-helper span{display:block;margin-top:8px;font-size:13px;color:#7b4b16}
+</style>
+<div id="put-helper"><strong>✏️ PUT 수정 도우미</strong><p>ID를 입력하면 기존 기록을 PUT 입력창에 자동으로 불러옵니다.</p><div><input id="put-id" type="number" min="1" placeholder="기록 ID 예: 2"><button id="put-load">불러오기</button></div><span id="put-msg">기록 ID를 입력해주세요.</span></div>
+<script>
+(() => {
+  const helper=document.getElementById('put-helper');
+  const syncVisibility=() => {
+    const put=document.querySelector('.opblock-put');
+    helper.classList.toggle('visible', Boolean(put && put.classList.contains('is-open')));
+  };
+  new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
+  document.addEventListener('click',()=>setTimeout(syncVisibility,50));
+  setInterval(syncVisibility,500);
+  syncVisibility();
+  const msg = (text, error=false) => { const e=document.getElementById('put-msg'); e.textContent=text; e.style.color=error?'#c0392b':'#7b4b16'; };
+  const setValue = (e, value) => { e.value=value; e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true})); };
+  document.getElementById('put-load').onclick = async () => {
+    const id=Number(document.getElementById('put-id').value);
+    if(!Number.isInteger(id)||id<1){msg('1 이상의 ID를 입력해주세요.',true);return;}
+    msg('불러오는 중입니다...');
+    try{
+      const res=await fetch('/records/'+id);
+      if(!res.ok){msg('해당 기록을 찾을 수 없어요.',true);return;}
+      const record=await res.json();
+      const put=document.querySelector('.opblock-put');
+      if(!put){msg('PUT 화면을 찾지 못했어요.',true);return;}
+      if(!put.classList.contains('is-open')) put.querySelector('.opblock-summary')?.click();
+      setTimeout(()=>{
+        const path=put.querySelector('input[placeholder="record_id"]')||put.querySelector('input'); if(path)setValue(path,String(id));
+        const tryButton=put.querySelector('button.try-out__btn'); if(tryButton&&/Try it out/i.test(tryButton.textContent))tryButton.click();
+        setTimeout(()=>{
+          const body=put.querySelector('textarea.body-param__text')||put.querySelector('textarea');
+          if(!body){msg('PUT의 Try it out을 먼저 눌러주세요.',true);return;}
+          setValue(body,JSON.stringify({date:record.date,weight:record.weight,height:record.height,systolic:record.systolic,diastolic:record.diastolic,blood_sugar:record.blood_sugar,steps:record.steps,sleep_hours:record.sleep_hours,memo:record.memo},null,2));
+          msg('#'+id+' 기록을 불러왔어요. 원하는 값만 수정하세요.');
+        },500);
+      },500);
+    }catch(e){msg('서버에 연결하지 못했어요.',true);}
+  };
+})();
+</script>
+'''
+    page = swagger_page.body.decode("utf-8")
+    return HTMLResponse(page.replace("</body>", helper + "</body>"))
+
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+def dashboard():
+    return """
+    <!doctype html>
+    <html lang="ko">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>마이 헬스 로그</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;500;700&display=swap');
+
+            :root {
+                --ink: #403b5c;
+                --muted: #827b9d;
+                --purple: #8b7cf6;
+                --purple-dark: #6655d8;
+                --lavender: #f2efff;
+                --peach: #fff0e8;
+                --mint: #e8fbf3;
+                --yellow: #fff8d9;
+                --white: #ffffff;
+                --shadow: 0 18px 50px rgba(91, 76, 161, 0.13);
             }
 
-            records[index] = updated_record
+            * { box-sizing: border-box; }
 
-            return updated_record
+            body {
+                margin: 0;
+                color: var(--ink);
+                font-family: 'Noto Sans KR', sans-serif;
+                background:
+                    radial-gradient(circle at 10% 5%, #fff3cf 0 9%, transparent 26%),
+                    radial-gradient(circle at 92% 12%, #e8e3ff 0 10%, transparent 28%),
+                    #fbfaff;
+            }
 
-    raise HTTPException(
-        status_code=404,
-        detail="해당 기록을 찾을 수 없습니다."
-    )
+            .wrap { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 60px; }
+
+            .hero {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 24px;
+                padding: 34px 38px;
+                border-radius: 30px;
+                background: linear-gradient(135deg, #e7e2ff, #fff0df);
+                box-shadow: var(--shadow);
+                overflow: hidden;
+                position: relative;
+            }
+
+            .hero::after {
+                content: '✦';
+                position: absolute;
+                right: 30px;
+                top: 16px;
+                color: #ffffff;
+                font-size: 42px;
+                transform: rotate(18deg);
+            }
+
+            h1, h2, h3 { margin: 0; font-family: 'Jua', sans-serif; font-weight: 400; }
+            h1 { font-size: clamp(32px, 5vw, 52px); letter-spacing: -1px; }
+            h2 { font-size: 25px; }
+            .hero p { margin: 10px 0 0; color: var(--muted); font-size: 15px; }
+            .mascot { font-size: 88px; filter: drop-shadow(0 10px 8px rgba(88, 66, 153, .12)); }
+
+            .layout { display: grid; grid-template-columns: 360px 1fr; gap: 22px; margin-top: 22px; }
+            .card { background: rgba(255,255,255,.9); border: 1px solid #eeeafd; border-radius: 24px; padding: 24px; box-shadow: var(--shadow); }
+            .card-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+            .card-title span { font-size: 23px; }
+
+            label { display: block; margin: 13px 0 6px; color: var(--muted); font-size: 13px; font-weight: 700; }
+            input, textarea {
+                width: 100%;
+                border: 1px solid #e6e1f6;
+                border-radius: 13px;
+                padding: 11px 12px;
+                color: var(--ink);
+                background: #fff;
+                font: inherit;
+                outline: none;
+                transition: .2s;
+            }
+            input:focus, textarea:focus { border-color: var(--purple); box-shadow: 0 0 0 4px #eeeaff; }
+            .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+            textarea { min-height: 70px; resize: vertical; }
+            button {
+                width: 100%;
+                border: 0;
+                border-radius: 14px;
+                padding: 13px 16px;
+                margin-top: 18px;
+                color: white;
+                background: linear-gradient(135deg, var(--purple), var(--purple-dark));
+                box-shadow: 0 9px 18px rgba(102, 85, 216, .25);
+                cursor: pointer;
+                font: 700 15px 'Noto Sans KR', sans-serif;
+                transition: transform .2s, box-shadow .2s;
+            }
+            button:hover { transform: translateY(-2px); box-shadow: 0 12px 22px rgba(102, 85, 216, .3); }
+
+            .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+            .metric { min-height: 118px; border-radius: 18px; padding: 16px; }
+            .metric:nth-child(1) { background: var(--lavender); }
+            .metric:nth-child(2) { background: var(--peach); }
+            .metric:nth-child(3) { background: var(--mint); }
+            .metric:nth-child(4) { background: var(--yellow); }
+            .metric .emoji { font-size: 24px; }
+            .metric .label { margin-top: 9px; color: var(--muted); font-size: 12px; }
+            .metric .value { margin-top: 3px; font: 25px 'Jua', sans-serif; }
+
+            .records { margin-top: 22px; }
+            .record { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 17px 0; border-bottom: 1px solid #f0edf8; }
+            .record:last-child { border-bottom: 0; }
+            .record-main { min-width: 0; }
+            .record-date { font-weight: 700; }
+            .record-meta { margin-top: 5px; color: var(--muted); font-size: 13px; }
+            .badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+            .badge { padding: 6px 9px; border-radius: 999px; background: #f1efff; color: var(--purple-dark); font-size: 12px; font-weight: 700; white-space: nowrap; }
+            .badge.warn { background: #ffe8e2; color: #d45748; }
+            .empty { padding: 44px 10px; text-align: center; color: var(--muted); }
+            .message { min-height: 22px; margin-top: 12px; color: var(--purple-dark); font-size: 13px; text-align: center; }
+            .edit-tools { margin-bottom: 18px; padding: 14px; border-radius: 16px; background: #f8f6ff; border: 1px dashed #d8d1ff; }
+            .edit-tools label { margin-top: 0; }
+            .edit-tools .two { align-items: end; }
+            .edit-tools button, .edit-button { width: auto; margin-top: 0; padding: 9px 13px; font-size: 13px; box-shadow: none; }
+            .edit-button { border: 0; border-radius: 10px; color: var(--purple-dark); background: #eeeaff; cursor: pointer; font-weight: 700; }
+            .edit-button:hover { background: #e2dcff; }
+            .cancel-button { display: none; margin: 8px auto 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+
+            @media (max-width: 820px) {
+                .layout { grid-template-columns: 1fr; }
+                .summary { grid-template-columns: repeat(2, 1fr); }
+            }
+            @media (max-width: 520px) {
+                .wrap { width: min(100% - 20px, 1080px); padding-top: 14px; }
+                .hero { padding: 25px; }
+                .mascot { font-size: 62px; }
+                .record { align-items: flex-start; flex-direction: column; }
+                .badges { justify-content: flex-start; }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="wrap">
+            <section class="hero">
+                <div>
+                    <h1>마이 헬스 로그</h1>
+                    <p>오늘의 나를 다정하게 기록해요 ♡</p>
+                </div>
+                <div class="mascot">🐰</div>
+            </section>
+
+            <div class="layout">
+                <section class="card">
+                    <div class="card-title"><h2>건강 기록하기</h2><span>📝</span></div>
+                    <div class="edit-tools">
+                        <label for="record-id">기존 기록 수정하기</label>
+                        <div class="two">
+                            <input id="record-id" type="number" min="1" placeholder="기록 번호 입력">
+                            <button id="load-record" type="button">불러오기 🔎</button>
+                        </div>
+                        <div style="margin-top:7px;color:#827b9d;font-size:12px">기록 번호를 입력하면 현재 저장된 내용이 아래에 채워져요.</div>
+                    </div>
+                    <form id="record-form">
+                        <label for="date">측정 날짜</label>
+                        <input id="date" type="date" required>
+
+                        <div class="two">
+                            <div><label for="weight">몸무게 (kg)</label><input id="weight" type="number" step="0.1" min="0.1" required></div>
+                            <div><label for="height">키 (cm)</label><input id="height" type="number" step="0.1" min="0.1" required></div>
+                        </div>
+
+                        <div class="two">
+                            <div><label for="systolic">수축기 혈압</label><input id="systolic" type="number" min="1" required></div>
+                            <div><label for="diastolic">이완기 혈압</label><input id="diastolic" type="number" min="1" required></div>
+                        </div>
+
+                        <label for="blood_sugar">공복 혈당 (mg/dL)</label>
+                        <input id="blood_sugar" type="number" min="1" required>
+
+                        <div class="two">
+                            <div><label for="steps">걸음 수</label><input id="steps" type="number" min="0" value="0"></div>
+                            <div><label for="sleep_hours">수면 시간</label><input id="sleep_hours" type="number" step="0.1" min="0" value="0"></div>
+                        </div>
+
+                        <label for="memo">메모</label>
+                        <textarea id="memo" placeholder="오늘의 컨디션은 어땠나요?"></textarea>
+                        <button type="submit">기록 저장하기 ✨</button>
+                        <button id="cancel-edit" class="cancel-button" type="button">수정 취소하고 새 기록 만들기</button>
+                        <div id="message" class="message"></div>
+                    </form>
+                </section>
+
+                <section>
+                    <div class="card">
+                        <div class="card-title"><h2>나의 건강 한눈에 보기</h2><span>🌷</span></div>
+                        <div id="summary" class="summary"></div>
+                    </div>
+
+                    <div class="card records">
+                        <div class="card-title"><h2>최근 기록</h2><span>🌿</span></div>
+                        <div id="records"></div>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <script>
+            const form = document.getElementById('record-form');
+            const message = document.getElementById('message');
+            const dateInput = document.getElementById('date');
+            const recordIdInput = document.getElementById('record-id');
+            const loadRecordButton = document.getElementById('load-record');
+            const submitButton = form.querySelector('button[type="submit"]');
+            const cancelEditButton = document.getElementById('cancel-edit');
+            let editingId = null;
+            dateInput.value = new Date().toISOString().slice(0, 10);
+
+            function escapeHtml(value) {
+                return String(value ?? '').replace(/[&<>'"]/g, char => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+                }[char]));
+            }
+
+            function badge(text, warning = false) {
+                return `<span class="badge ${warning ? 'warn' : ''}">${escapeHtml(text)}</span>`;
+            }
+
+            function renderSummary(record) {
+                const summary = document.getElementById('summary');
+                if (!record) {
+                    summary.innerHTML = '<div class="empty" style="grid-column:1/-1">아직 기록이 없어요. 첫 기록을 남겨보세요 🐰</div>';
+                    return;
+                }
+
+                summary.innerHTML = `
+                    <div class="metric"><div class="emoji">⚖️</div><div class="label">BMI</div><div class="value">${escapeHtml(record.bmi)} <small>${escapeHtml(record.bmi_category)}</small></div></div>
+                    <div class="metric"><div class="emoji">💗</div><div class="label">혈압</div><div class="value" style="font-size:20px">${escapeHtml(record.bp_category)}</div></div>
+                    <div class="metric"><div class="emoji">🍬</div><div class="label">혈당</div><div class="value" style="font-size:20px">${escapeHtml(record.sugar_category)}</div></div>
+                    <div class="metric"><div class="emoji">✨</div><div class="label">오늘의 경고</div><div class="value">${record.warnings.length}개</div></div>
+                `;
+            }
+
+            function renderRecords(payload) {
+                const target = document.getElementById('records');
+                if (!payload.records.length) {
+                    target.innerHTML = '<div class="empty">아직 저장된 기록이 없어요 🌱</div>';
+                    renderSummary(null);
+                    return;
+                }
+
+                const sorted = [...payload.records].sort((a, b) => b.id - a.id);
+                renderSummary(sorted[0]);
+                target.innerHTML = sorted.map(record => `
+                    <div class="record">
+                        <div class="record-main">
+                            <div class="record-date">${escapeHtml(record.date)} <span style="color:#aaa;font-size:12px">#${escapeHtml(record.id)}</span></div>
+                            <div class="record-meta">몸무게 ${escapeHtml(record.weight)}kg · 혈압 ${escapeHtml(record.systolic)}/${escapeHtml(record.diastolic)} · 혈당 ${escapeHtml(record.blood_sugar)}</div>
+                        </div>
+                        <div class="badges">
+                            ${badge('BMI ' + record.bmi_category)}
+                            ${badge('혈압 ' + record.bp_category)}
+                            ${badge('혈당 ' + record.sugar_category)}
+                            ${record.warnings.map(warning => badge(warning, true)).join('')}
+                            <button class="edit-button" type="button" onclick="startEdit(${record.id})">수정하기</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            async function loadRecords() {
+                const response = await fetch('/records');
+                const payload = await response.json();
+                renderRecords(payload);
+            }
+
+            function fillForm(record) {
+                dateInput.value = record.date;
+                document.getElementById('weight').value = record.weight;
+                document.getElementById('height').value = record.height;
+                document.getElementById('systolic').value = record.systolic;
+                document.getElementById('diastolic').value = record.diastolic;
+                document.getElementById('blood_sugar').value = record.blood_sugar;
+                document.getElementById('steps').value = record.steps;
+                document.getElementById('sleep_hours').value = record.sleep_hours;
+                document.getElementById('memo').value = record.memo;
+                editingId = record.id;
+                recordIdInput.value = record.id;
+                submitButton.textContent = '수정 내용 저장하기 💜';
+                cancelEditButton.style.display = 'block';
+                message.textContent = `#${record.id} 기록을 불러왔어요. 아래 내용을 수정해 보세요!`;
+                form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            async function startEdit(id) {
+                recordIdInput.value = id;
+                await loadRecord();
+            }
+
+            async function loadRecord() {
+                const id = Number(recordIdInput.value);
+                if (!id) {
+                    message.textContent = '수정할 기록 번호를 입력해 주세요.';
+                    return;
+                }
+
+                const response = await fetch(`/records/${id}`);
+                if (!response.ok) {
+                    message.textContent = '해당 기록을 찾을 수 없어요.';
+                    return;
+                }
+
+                fillForm(await response.json());
+            }
+
+            loadRecordButton.addEventListener('click', loadRecord);
+
+            cancelEditButton.addEventListener('click', () => {
+                editingId = null;
+                recordIdInput.value = '';
+                form.reset();
+                dateInput.value = new Date().toISOString().slice(0, 10);
+                document.getElementById('steps').value = 0;
+                document.getElementById('sleep_hours').value = 0;
+                submitButton.textContent = '새 기록 저장하기 ✨';
+                cancelEditButton.style.display = 'none';
+                message.textContent = '새 기록을 입력할 수 있어요.';
+            });
+
+            form.addEventListener('submit', async event => {
+                event.preventDefault();
+                message.textContent = '저장 중이에요...';
+
+                const payload = {
+                    date: dateInput.value,
+                    weight: Number(document.getElementById('weight').value),
+                    height: Number(document.getElementById('height').value),
+                    systolic: Number(document.getElementById('systolic').value),
+                    diastolic: Number(document.getElementById('diastolic').value),
+                    blood_sugar: Number(document.getElementById('blood_sugar').value),
+                    steps: Number(document.getElementById('steps').value || 0),
+                    sleep_hours: Number(document.getElementById('sleep_hours').value || 0),
+                    memo: document.getElementById('memo').value
+                };
+
+                const url = editingId ? `/records/${editingId}` : '/records';
+                const method = editingId ? 'PUT' : 'POST';
+                const response = await fetch(url, {
+                    method,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    message.textContent = '입력값을 다시 확인해 주세요 🥲';
+                    return;
+                }
+
+                message.textContent = '건강 기록을 저장했어요! 💜';
+                editingId = null;
+                form.reset();
+                dateInput.value = new Date().toISOString().slice(0, 10);
+                document.getElementById('steps').value = 0;
+                document.getElementById('sleep_hours').value = 0;
+                recordIdInput.value = '';
+                submitButton.textContent = '새 기록 저장하기 ✨';
+                cancelEditButton.style.display = 'none';
+                await loadRecords();
+            });
+
+            loadRecords().catch(() => {
+                document.getElementById('records').innerHTML = '<div class="empty">기록을 불러오지 못했어요.</div>';
+            });
+        </script>
+    </body>
+    </html>
+    """

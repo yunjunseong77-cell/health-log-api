@@ -1,6 +1,9 @@
 venv/
 __pycache__/
 *.pyc
-data.json
+.git/
+.gitignore
 health_records.db
 *.db
+data.json
+.env

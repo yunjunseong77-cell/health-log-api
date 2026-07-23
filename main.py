@@ -601,14 +601,21 @@ def custom_docs():
 #put-helper{display:none;position:fixed;top:85px;right:24px;z-index:99999;width:320px;padding:16px;border:2px solid #ff9f43;border-radius:14px;background:#fff8ef;box-shadow:0 8px 24px #0003;font-family:Arial,sans-serif}
 #put-helper.visible{display:block}
 #put-helper strong{color:#7b4b16;font-size:16px}#put-helper p{font-size:13px;line-height:1.5;color:#5c4630}#put-helper div{display:flex;gap:8px}#put-helper input{width:150px;padding:8px;border:1px solid #d8c2a5;border-radius:8px}#put-helper button{padding:8px 12px;border:0;border-radius:8px;background:#ff9f43;color:white;font-weight:bold;cursor:pointer}#put-helper span{display:block;margin-top:8px;font-size:13px;color:#7b4b16}
+#post-helper{display:none;position:fixed;left:24px;bottom:24px;z-index:99999;width:330px;padding:18px;border:2px solid #49c98b;border-radius:14px;background:#effff6;box-shadow:0 8px 24px #0003;font-family:Arial,sans-serif}
+#post-helper.visible{display:block}
+#post-helper strong{color:#18794e;font-size:16px}#post-helper p{margin:8px 0 12px;font-size:13px;line-height:1.5;color:#35614d}#post-helper label{display:block;margin:8px 0 4px;color:#35614d;font-size:12px;font-weight:bold}#post-helper input,#post-helper textarea{width:100%;padding:7px;border:1px solid #b8dfca;border-radius:8px;background:#fff;font:inherit;box-sizing:border-box}#post-helper textarea{min-height:62px;resize:vertical}#post-helper button{width:100%;margin-top:12px;padding:9px;border:0;border-radius:8px;background:#31b978;color:white;font-weight:bold;cursor:pointer}#post-helper button:hover{background:#239b61}#post-message{display:block;margin-top:9px;font-size:12px;color:#18794e;line-height:1.4}
 </style>
 <div id="put-helper"><strong>✏️ PUT 수정 도우미</strong><p>ID를 입력하면 기존 기록을 PUT 입력창에 자동으로 불러옵니다.</p><div><input id="put-id" type="number" min="1" placeholder="기록 ID 예: 2"><button id="put-load">불러오기</button></div><span id="put-msg">기록 ID를 입력해주세요.</span></div>
+<div id="post-helper"><strong>📝 건강 기록 빠른 입력</strong><p>건강 기록의 모든 항목을 입력하면 저장 후 BMI와 건강 분류를 자동으로 계산합니다.</p><form id="quick-record-form"><label for="quick-date">날짜</label><input id="quick-date" type="date" required><label for="quick-weight">몸무게 (kg)</label><input id="quick-weight" type="number" min="0.1" step="0.1" required><label for="quick-height">키 (cm)</label><input id="quick-height" type="number" min="0.1" step="0.1" required><label for="quick-systolic">수축기 혈압</label><input id="quick-systolic" type="number" min="1" required><label for="quick-diastolic">이완기 혈압</label><input id="quick-diastolic" type="number" min="1" required><label for="quick-sugar">공복 혈당</label><input id="quick-sugar" type="number" min="1" required><label for="quick-steps">걸음 수</label><input id="quick-steps" type="number" min="0" value="0" required><label for="quick-sleep">수면 시간</label><input id="quick-sleep" type="number" min="0" step="0.1" value="0" required><label for="quick-memo">메모</label><textarea id="quick-memo" placeholder="오늘의 컨디션이나 특이사항을 입력하세요."></textarea><button type="submit">기록 저장하기</button></form><span id="post-message">POST 탭을 펼치면 입력할 수 있어요.</span></div>
 <script>
 (() => {
   const helper=document.getElementById('put-helper');
+  const postHelper=document.getElementById('post-helper');
   const syncVisibility=() => {
     const put=document.querySelector('.opblock-put');
+    const post=document.querySelector('.opblock-post');
     helper.classList.toggle('visible', Boolean(put && put.classList.contains('is-open')));
+    postHelper.classList.toggle('visible', Boolean(post && post.classList.contains('is-open')));
   };
   new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
   document.addEventListener('click',()=>setTimeout(syncVisibility,50));
@@ -639,6 +646,42 @@ def custom_docs():
       },500);
     }catch(e){msg('서버에 연결하지 못했어요.',true);}
   };
+
+  const quickForm=document.getElementById('quick-record-form');
+  const postMessage=document.getElementById('post-message');
+  document.getElementById('quick-date').value=new Date().toISOString().slice(0,10);
+  quickForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    postMessage.textContent='저장 중입니다...';
+    try {
+      const response=await fetch('/records', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          date:document.getElementById('quick-date').value,
+          weight:Number(document.getElementById('quick-weight').value),
+          height:Number(document.getElementById('quick-height').value),
+          systolic:Number(document.getElementById('quick-systolic').value),
+          diastolic:Number(document.getElementById('quick-diastolic').value),
+          blood_sugar:Number(document.getElementById('quick-sugar').value),
+          steps:Number(document.getElementById('quick-steps').value),
+          sleep_hours:Number(document.getElementById('quick-sleep').value),
+          memo:document.getElementById('quick-memo').value
+        })
+      });
+      const data=await response.json();
+      if(!response.ok){postMessage.textContent='저장 실패: '+(data.detail || '입력값을 확인해주세요.');postMessage.style.color='#c0392b';return;}
+      postMessage.textContent=`#${data.id} 저장 완료! BMI ${data.bmi}, ${data.bmi_category}`;
+      quickForm.reset();
+      document.getElementById('quick-date').value=new Date().toISOString().slice(0,10);
+      document.getElementById('quick-steps').value=0;
+      document.getElementById('quick-sleep').value=0;
+      postMessage.style.color='#18794e';
+    } catch(error) {
+      postMessage.textContent='서버에 연결하지 못했어요.';
+      postMessage.style.color='#c0392b';
+    }
+  });
 })();
 </script>
 '''

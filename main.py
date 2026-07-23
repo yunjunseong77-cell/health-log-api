@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 import sqlite3
 import json
 from pathlib import Path
+from datetime import date as date_type
 
 
 # -----------------------------
@@ -88,14 +89,23 @@ init_db()
 
 class RecordIn(BaseModel):
     date: str
-    weight: float
-    height: float
-    systolic: int
-    diastolic: int
-    blood_sugar: int
-    steps: int = 0
-    sleep_hours: float = 0.0
+    weight: float = Field(gt=0, description="몸무게(kg), 0보다 커야 합니다.")
+    height: float = Field(gt=0, description="키(cm), 0보다 커야 합니다.")
+    systolic: int = Field(gt=0, description="수축기 혈압, 0보다 커야 합니다.")
+    diastolic: int = Field(gt=0, description="이완기 혈압, 0보다 커야 합니다.")
+    blood_sugar: int = Field(ge=0, description="공복 혈당, 0 이상이어야 합니다.")
+    steps: int = Field(default=0, ge=0, description="걸음 수, 0 이상이어야 합니다.")
+    sleep_hours: float = Field(default=0.0, ge=0, description="수면 시간, 0 이상이어야 합니다.")
     memo: str = ""
+
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, value: str):
+        try:
+            date_type.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("date는 YYYY-MM-DD 형식이어야 합니다.") from error
+        return value
 
 
 # -----------------------------
@@ -499,6 +509,21 @@ def delete_record(record_id: int):
     tags=["검색"]
 )
 def search_records(start: str, end: str):
+    try:
+        start_date = date_type.fromisoformat(start)
+        end_date = date_type.fromisoformat(end)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="start와 end는 YYYY-MM-DD 형식이어야 합니다."
+        ) from error
+
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start는 end보다 늦을 수 없습니다."
+        )
+
     connection = get_connection()
 
     rows = connection.execute(

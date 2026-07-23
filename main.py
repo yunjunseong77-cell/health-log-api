@@ -1,9 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 import sqlite3
 import json
+import base64
+import hashlib
+import hmac
+import secrets
+import time
+import os
 from pathlib import Path
 from datetime import date as date_type
 
@@ -76,11 +82,167 @@ def init_db():
         )
     """)
 
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     connection.commit()
     connection.close()
 
 
 init_db()
+
+
+# -----------------------------
+# 로그인·회원가입
+# -----------------------------
+
+AUTH_SECRET = os.getenv("AUTH_SECRET", "health-log-api-change-this-secret")
+
+
+class SignupIn(BaseModel):
+    username: str = Field(min_length=2, max_length=30)
+    email: str = Field(min_length=5, max_length=120)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginIn(BaseModel):
+    login: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=1, max_length=128)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120_000)
+    return base64.urlsafe_b64encode(salt + digest).decode()
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        decoded = base64.urlsafe_b64decode(stored_hash.encode())
+        salt, expected = decoded[:16], decoded[16:]
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120_000)
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, base64.binascii.Error):
+        return False
+
+
+def create_session_token(user_id: int) -> str:
+    payload = f"{user_id}:{int(time.time())}"
+    signature = hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def get_session_user(request: Request):
+    token = request.cookies.get("health_session")
+    if not token:
+        return None
+    try:
+        user_id, issued_at, signature = token.split(":", 2)
+        payload = f"{user_id}:{issued_at}"
+        expected = hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        if int(time.time()) - int(issued_at) > 60 * 60 * 24 * 7:
+            return None
+        connection = get_connection()
+        user = connection.execute("SELECT id, username, email FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        connection.close()
+        return user
+    except (ValueError, TypeError):
+        return None
+
+
+def auth_page(mode: str) -> str:
+    is_login = mode == "login"
+    title = "다시 만나서 반가워요" if is_login else "건강한 기록을 시작해요"
+    subtitle = "오늘의 몸 상태를 가볍게 기록해보세요." if is_login else "나만의 건강 기록 공간을 만들어보세요."
+    action = "로그인" if is_login else "회원가입"
+    switch_text = "아직 계정이 없나요?" if is_login else "이미 계정이 있나요?"
+    switch_href = "/signup" if is_login else "/login"
+    switch_action = "회원가입" if is_login else "로그인"
+    login_field = "" if is_login else '<label>닉네임<input id="username" placeholder="2자 이상 입력" /></label>'
+    return f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{action} · 마이 헬스 로그</title>
+<style>
+*{{box-sizing:border-box}} body{{margin:0;min-height:100vh;background:linear-gradient(135deg,#effcf7,#fff8ef);font-family:Arial,'Malgun Gothic',sans-serif;color:#233b35;display:flex;align-items:center;justify-content:center;padding:24px}}
+.shell{{width:min(980px,100%);display:grid;grid-template-columns:1fr 1fr;background:#fff;border-radius:28px;overflow:hidden;box-shadow:0 24px 70px #40776b22}}
+.hero{{padding:56px 48px;background:linear-gradient(145deg,#30b982,#79d9ac);color:white;position:relative;overflow:hidden}}
+.hero:after{{content:'♡';position:absolute;font-size:240px;right:-20px;bottom:-70px;color:#ffffff2b}}
+.logo{{font-size:18px;font-weight:700;letter-spacing:.5px}} h1{{font-size:36px;line-height:1.3;margin:90px 0 18px;position:relative;z-index:1}} .hero p{{font-size:17px;line-height:1.7;position:relative;z-index:1}}
+.form{{padding:56px 48px}} h2{{margin:0 0 10px;font-size:28px}} .subtitle{{color:#71827d;margin:0 0 28px}} label{{display:block;font-size:14px;font-weight:700;margin:18px 0 8px}} input{{width:100%;padding:14px 15px;border:1px solid #d7e5df;border-radius:12px;font-size:15px;outline:none}} input:focus{{border-color:#35bd83;box-shadow:0 0 0 4px #35bd8320}}
+button{{width:100%;border:0;border-radius:12px;padding:15px;background:#29b77d;color:#fff;font-size:16px;font-weight:700;cursor:pointer;margin-top:26px}} button:hover{{background:#189d68}} .switch{{text-align:center;color:#758580;margin-top:22px;font-size:14px}} a{{color:#169b68;font-weight:700;text-decoration:none}} .message{{min-height:22px;color:#d05252;text-align:center;margin-top:14px;font-size:14px}}
+@media(max-width:700px){{.shell{{grid-template-columns:1fr}}.hero{{padding:34px}}.hero h1{{margin-top:50px}}.form{{padding:34px}}}}
+</style></head><body><main class="shell"><section class="hero"><div class="logo">🌿 마이 헬스 로그</div><h1>{title}</h1><p>{subtitle}<br>작은 기록이 나를 돌보는 습관이 돼요.</p></section><section class="form"><h2>{action}</h2><p class="subtitle">{subtitle}</p><form id="auth-form">{login_field}<label>{'이메일 또는 닉네임' if is_login else '이메일'}<input id="login" type="{'text' if is_login else 'email'}" placeholder="{'이메일 또는 닉네임 입력' if is_login else 'you@example.com'}" required /></label><label>비밀번호<input id="password" type="password" placeholder="8자 이상 입력" required /></label><button type="submit">{action}</button></form><div id="message" class="message"></div><p class="switch">{switch_text} <a href="{switch_href}">{switch_action}</a></p></section></main>
+<script>
+document.getElementById('auth-form').addEventListener('submit', async (event) => {{
+  event.preventDefault();
+  const message = document.getElementById('message');
+  message.textContent = '처리 중이에요...';
+  const body = {{login: document.getElementById('login').value, password: document.getElementById('password').value}};
+  {'body.username = document.getElementById(\'username\').value; body.email = body.login;' if not is_login else ''}
+  const response = await fetch('/auth/{'login' if is_login else 'signup'}', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({'body' if is_login else 'body'})}});
+  const data = await response.json();
+  if (!response.ok) {{ message.textContent = data.detail || '다시 시도해주세요.'; return; }}
+  if ({'true' if is_login else 'false'}) {{ window.location.href = '/dashboard'; }} else {{ window.location.href = '/login?registered=1'; }}
+}});
+</script></body></html>"""
+
+
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+def login_page():
+    return HTMLResponse(auth_page("login"))
+
+
+@app.get("/signup", response_class=HTMLResponse, include_in_schema=False)
+def signup_page():
+    return HTMLResponse(auth_page("signup"))
+
+
+@app.post("/auth/signup")
+def signup(payload: SignupIn):
+    email = payload.email.strip().lower()
+    username = payload.username.strip()
+    connection = get_connection()
+    try:
+        cursor = connection.execute(
+            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
+            (username, email, hash_password(payload.password))
+        )
+        connection.commit()
+        return {"message": "회원가입이 완료되었습니다.", "user_id": cursor.lastrowid}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="이미 사용 중인 이메일 또는 닉네임입니다.")
+    finally:
+        connection.close()
+
+
+@app.post("/auth/login")
+def login(payload: LoginIn, response: Response):
+    login_value = payload.login.strip().lower()
+    connection = get_connection()
+    user = connection.execute(
+        "SELECT * FROM users WHERE lower(email) = ? OR lower(username) = ?",
+        (login_value, login_value)
+    ).fetchone()
+    connection.close()
+    if user is None or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="이메일/닉네임 또는 비밀번호를 확인해주세요.")
+    response.set_cookie("health_session", create_session_token(user["id"]), httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7)
+    return {"message": "로그인되었습니다.", "username": user["username"]}
+
+
+@app.post("/auth/logout")
+def logout(response: Response):
+    response.delete_cookie("health_session")
+    return {"message": "로그아웃되었습니다."}
 
 
 # -----------------------------
@@ -715,7 +877,9 @@ def custom_docs():
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-def dashboard():
+def dashboard(request: Request):
+    if get_session_user(request) is None:
+        return RedirectResponse(url="/login", status_code=303)
     return """
     <!doctype html>
     <html lang="ko">
@@ -781,6 +945,9 @@ def dashboard():
             h2 { font-size: 25px; }
             .hero p { margin: 10px 0 0; color: var(--muted); font-size: 15px; }
             .mascot { font-size: 88px; filter: drop-shadow(0 10px 8px rgba(88, 66, 153, .12)); }
+            .hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; position: relative; z-index: 1; }
+            .logout-button { width: auto; margin: 0; padding: 9px 14px; color: var(--purple-dark); background: rgba(255,255,255,.82); box-shadow: none; font-size: 13px; }
+            .logout-button:hover { background: #fff; box-shadow: 0 8px 18px rgba(102, 85, 216, .16); }
 
             .layout { display: grid; grid-template-columns: 360px 1fr; gap: 22px; margin-top: 22px; }
             .card { background: rgba(255,255,255,.9); border: 1px solid #eeeafd; border-radius: 24px; padding: 24px; box-shadow: var(--shadow); }
@@ -866,7 +1033,10 @@ def dashboard():
                     <h1>마이 헬스 로그</h1>
                     <p>오늘의 나를 다정하게 기록해요 ♡</p>
                 </div>
-                <div class="mascot">🐰</div>
+                <div class="hero-actions">
+                    <button id="logout-button" class="logout-button" type="button">로그아웃</button>
+                    <div class="mascot">🐰</div>
+                </div>
             </section>
 
             <div class="layout">
@@ -925,6 +1095,11 @@ def dashboard():
         </main>
 
         <script>
+            document.getElementById('logout-button').addEventListener('click', async () => {
+                await fetch('/auth/logout', { method: 'POST' });
+                location.href = '/login';
+            });
+
             const form = document.getElementById('record-form');
             const message = document.getElementById('message');
             const dateInput = document.getElementById('date');

@@ -130,6 +130,16 @@ def init_db():
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(user_id, occurred_at)"
     )
+    event_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(events)").fetchall()
+    }
+    for column, definition in {
+        "amount": "TEXT NOT NULL DEFAULT ''",
+        "time_of_day": "TEXT NOT NULL DEFAULT ''",
+        "duration": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if column not in event_columns:
+            connection.execute(f"ALTER TABLE events ADD COLUMN {column} {definition}")
 
     connection.execute("""
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -173,16 +183,16 @@ class SignupIn(BaseModel):
     email: str = Field(min_length=5, max_length=120)
     password: str = Field(min_length=8, max_length=128)
     gender: str | None = None
-    age: int | None = Field(default=None, ge=1, le=120)
-    height: float | None = Field(default=None, gt=0, le=250)
-    weight: float | None = Field(default=None, gt=0, le=500)
+    age: int | None = Field(default=None, ge=1, le=150)
+    height: float | None = Field(default=None, ge=50, le=250)
+    weight: float | None = Field(default=None, gt=0, lt=500)
 
 
 class ProfileIn(BaseModel):
     gender: str | None = None
-    age: int | None = Field(default=None, ge=1, le=120)
-    height: float | None = Field(default=None, gt=0, le=250)
-    weight: float | None = Field(default=None, gt=0, le=500)
+    age: int | None = Field(default=None, ge=1, le=150)
+    height: float | None = Field(default=None, ge=50, le=250)
+    weight: float | None = Field(default=None, gt=0, lt=500)
 
 
 class LoginIn(BaseModel):
@@ -263,7 +273,7 @@ def auth_page(mode: str) -> str:
     switch_action = "회원가입" if is_login else "로그인"
     login_field = "" if is_login else '<label>닉네임<input id="username" placeholder="2자 이상 입력" /></label>'
     if not is_login:
-        login_field += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>성별<select id="gender"><option value="">선택 안 함</option><option>여성</option><option>남성</option><option>기타</option></select></label><label>나이<input id="age" type="number" min="1" max="120" placeholder="나이"></label></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>키(cm)<input id="height" type="number" min="1" step="0.1" placeholder="키"></label><label>몸무게(kg)<input id="weight" type="number" min="1" step="0.1" placeholder="몸무게"></label></div>'
+        login_field += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>성별<select id="gender"><option value="">선택 안 함</option><option>여성</option><option>남성</option><option>기타</option></select></label><label>나이<input id="age" type="number" min="1" max="150" step="1" placeholder="나이"></label></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>키(cm)<input id="height" type="number" min="50" max="250" step="0.1" placeholder="키"></label><label>몸무게(kg)<input id="weight" type="number" min="0.1" max="499.9" step="0.1" placeholder="몸무게"></label></div>'
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{action} · 마이 헬스 로그</title>
@@ -420,7 +430,96 @@ class RecordIn(BaseModel):
         return value
 
 
+    @field_validator("weight")
+    @classmethod
+    def validate_weight_range(cls, value: float):
+        if value >= 500:
+            raise ValueError("몸무게는 500kg 미만이어야 합니다.")
+        return value
+
+    @field_validator("height")
+    @classmethod
+    def validate_height_range(cls, value: float):
+        if value < 50 or value > 250:
+            raise ValueError("키는 50cm 이상 250cm 이하만 가능합니다.")
+        return value
+
+    @field_validator("date")
+    @classmethod
+    def validate_not_future(cls, value: str):
+        if date_type.fromisoformat(value) > datetime.now(KST).date():
+            raise ValueError("미래 날짜는 건강 기록으로 저장할 수 없습니다.")
+        return value
+
+
+    @field_validator("systolic")
+    @classmethod
+    def validate_systolic_range(cls, value: int):
+        if value < 30 or value > 300:
+            raise ValueError("수축기 혈압은 30~300 범위만 가능합니다.")
+        return value
+
+    @field_validator("diastolic")
+    @classmethod
+    def validate_diastolic_range(cls, value: int):
+        if value < 20 or value > 200:
+            raise ValueError("이완기 혈압은 20~200 범위만 가능합니다.")
+        return value
+
+    @field_validator("blood_sugar")
+    @classmethod
+    def validate_blood_sugar_range(cls, value: int):
+        if value > 1000:
+            raise ValueError("혈당은 1000 이하만 가능합니다.")
+        return value
+
+    @field_validator("steps")
+    @classmethod
+    def validate_steps_range(cls, value: int):
+        if value > 200000:
+            raise ValueError("걸음 수는 200,000 이하만 가능합니다.")
+        return value
+
+    @field_validator("sleep_hours")
+    @classmethod
+    def validate_sleep_range(cls, value: float):
+        if value > 24:
+            raise ValueError("수면 시간은 24시간 이하만 가능합니다.")
+        return value
+
+
 class EventIn(BaseModel):
+    amount: str = Field(default="", max_length=20)
+    time_of_day: str = Field(default="", max_length=20)
+    duration: str = Field(default="", max_length=20)
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, value: str):
+        if value not in {"coffee", "alcohol", "meal", "exercise", "sleep", "medication", "mood", "other"}:
+            raise ValueError("허용되지 않은 이벤트 종류입니다.")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def validate_amount(cls, value: str):
+        if value and value not in {"small", "medium", "large"}:
+            raise ValueError("섭취량은 적음·보통·많음 중 하나여야 합니다.")
+        return value
+
+    @field_validator("time_of_day")
+    @classmethod
+    def validate_time_of_day(cls, value: str):
+        if value and value not in {"morning", "afternoon", "evening", "night"}:
+            raise ValueError("시간대 선택이 올바르지 않습니다.")
+        return value
+
+    @field_validator("duration")
+    @classmethod
+    def validate_duration(cls, value: str):
+        if value and value not in {"under_30", "30_60", "over_60"}:
+            raise ValueError("시간 선택이 올바르지 않습니다.")
+        return value
     raw_text: str = Field(min_length=1, max_length=500, description="생활 이벤트 원문")
     event_type: str = Field(default="기타", max_length=30, description="이벤트 종류")
     occurred_at: str = Field(default="", description="발생 시각")
@@ -1059,6 +1158,12 @@ def create_event(event: EventIn, request: Request):
     user = require_session_user(request)
     # AWS Ubuntu 서버의 기본 시간은 UTC이므로, 사용자에게 보이는 기록 시각은 한국 시간으로 저장합니다.
     occurred_at = event.occurred_at.strip() or datetime.now(KST).isoformat(timespec="minutes")
+    try:
+        occurred_date = date_type.fromisoformat(occurred_at[:10])
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="이벤트 날짜 형식이 올바르지 않습니다.") from error
+    if occurred_date > datetime.now(KST).date():
+        raise HTTPException(status_code=422, detail="미래 날짜의 이벤트는 저장할 수 없습니다.")
 
     connection = get_connection()
     cursor = connection.execute(
@@ -1424,6 +1529,7 @@ def dashboard(request: Request):
             .calendar-day.selected { border: 2px solid var(--purple); background: #eaf7f0; }
             .calendar-day.today { color: var(--purple-dark); font-weight: 700; }
             .calendar-day.empty-day { visibility: hidden; }
+            .calendar-day:disabled { cursor: not-allowed; opacity: .35; background: #f5f6f6; }
             .calendar-counts { display: flex; justify-content: center; gap: 3px; margin-top: 7px; color: var(--purple-dark); font-size: 10px; }
             .calendar-detail { margin-top: 16px; padding-top: 15px; border-top: 1px solid #e5ebe8; }
             .calendar-detail h3 { margin-bottom: 10px; font-size: 16px; }
@@ -1476,7 +1582,7 @@ def dashboard(request: Request):
 
             <section class="card" style="margin-bottom:18px">
                 <div class="card-title"><div><h2>내 프로필 설정</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">키와 몸무게를 저장하면 건강 기록 입력 때 자동으로 채워져요.</div></div><span>⚙️</span></div>
-                <form id="profile-form" class="event-form"><select id="profile-gender"><option value="">성별 선택</option><option>여성</option><option>남성</option><option>기타</option></select><input id="profile-age" type="number" min="1" max="120" placeholder="나이"><input id="profile-height" type="number" min="1" step="0.1" placeholder="키(cm)"><input id="profile-weight" type="number" min="1" step="0.1" placeholder="몸무게(kg)"><button type="submit">프로필 저장</button></form><div id="profile-message" class="event-message"></div>
+                <form id="profile-form" class="event-form"><select id="profile-gender"><option value="">성별 선택</option><option>여성</option><option>남성</option><option>기타</option></select><input id="profile-age" type="number" min="1" max="150" step="1" placeholder="나이"><input id="profile-height" type="number" min="50" max="250" step="0.1" placeholder="키(cm)"><input id="profile-weight" type="number" min="0.1" max="499.9" step="0.1" placeholder="몸무게(kg)"><button type="submit">프로필 저장</button></form><div id="profile-message" class="event-message"></div>
             </section>
 
             <section class="card quick-event">
@@ -1570,6 +1676,19 @@ def dashboard(request: Request):
             const eventForm = document.getElementById('event-form');
             const eventText = document.getElementById('event-text');
             const eventType = document.getElementById('event-type');
+            eventText.style.display = 'none';
+            eventText.removeAttribute('required');
+            eventType.innerHTML = '<option value="coffee">커피</option><option value="alcohol">음주</option><option value="meal">식사·간식</option><option value="exercise">운동</option><option value="sleep">수면</option><option value="medication">복약</option><option value="mood">기분·스트레스</option><option value="other">기타</option>';
+            function addEventSelect(id, options) {
+                const select = document.createElement('select');
+                select.id = id;
+                select.innerHTML = options;
+                eventForm.appendChild(select);
+                return select;
+            }
+            const eventAmount = addEventSelect('event-amount', '<option value="">양 선택 안 함</option><option value="small">적게</option><option value="medium">보통</option><option value="large">많이</option>');
+            const eventTime = addEventSelect('event-time', '<option value="">시간대 선택 안 함</option><option value="morning">오전</option><option value="afternoon">오후</option><option value="evening">저녁</option><option value="night">밤</option>');
+            const eventDuration = addEventSelect('event-duration', '<option value="">시간 선택 안 함</option><option value="under_30">30분 미만</option><option value="30_60">30분~1시간</option><option value="over_60">1시간 이상</option>');
             const eventMessage = document.getElementById('event-message');
             const eventList = document.getElementById('event-list');
             const calendarMonth = document.getElementById('calendar-month');
@@ -1594,6 +1713,7 @@ def dashboard(request: Request):
                 const firstDay = new Date(year, month, 1).getDay();
                 const lastDate = new Date(year, month + 1, 0).getDate();
                 const selected = calendarDetail.dataset.date || localDateKey();
+                const today = localDateKey();
                 for (let i = 0; i < firstDay; i++) {
                     const blank = document.createElement('div');
                     blank.className = 'calendar-day empty-day';
@@ -1605,9 +1725,11 @@ def dashboard(request: Request):
                     const eventCount = calendarEvents.filter(event => event.occurred_at.startsWith(key)).length;
                     const button = document.createElement('button');
                     button.type = 'button';
-                    button.className = `calendar-day ${key === selected ? 'selected' : ''} ${key === localDateKey() ? 'today' : ''}`;
+                    const isFuture = key > today;
+                    button.disabled = isFuture;
+                    button.className = `calendar-day ${key === selected ? 'selected' : ''} ${key === today ? 'today' : ''}`;
                     button.innerHTML = `<span>${day}</span><span class="calendar-counts">${recordCount ? `♥ ${recordCount}` : ''}${eventCount ? ` · ✦ ${eventCount}` : ''}</span>`;
-                    button.addEventListener('click', () => selectCalendarDate(key));
+                    if (!isFuture) button.addEventListener('click', () => selectCalendarDate(key));
                     calendarGrid.appendChild(button);
                 }
             }
@@ -1669,7 +1791,7 @@ def dashboard(request: Request):
                 const response = await fetch('/events', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({raw_text: eventText.value, event_type: eventType.value})
+                    body: JSON.stringify({raw_text: `${eventType.options[eventType.selectedIndex].text} · ${eventAmount.options[eventAmount.selectedIndex].text} · ${eventTime.options[eventTime.selectedIndex].text} · ${eventDuration.options[eventDuration.selectedIndex].text}`, event_type: eventType.value, amount: eventAmount.value, time_of_day: eventTime.value, duration: eventDuration.value})
                 });
                 if (!response.ok) {
                     eventMessage.textContent = '이벤트를 저장하지 못했어요.';
@@ -1690,7 +1812,8 @@ def dashboard(request: Request):
             const submitButton = form.querySelector('button[type="submit"]');
             const cancelEditButton = document.getElementById('cancel-edit');
             let editingId = null;
-            dateInput.value = new Date().toISOString().slice(0, 10);
+            dateInput.max = localDateKey();
+            dateInput.value = localDateKey();
 
             function escapeHtml(value) {
                 return String(value ?? '').replace(/[&<>'"]/g, char => ({

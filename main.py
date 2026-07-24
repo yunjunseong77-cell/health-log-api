@@ -183,16 +183,16 @@ class SignupIn(BaseModel):
     email: str = Field(min_length=5, max_length=120)
     password: str = Field(min_length=8, max_length=128)
     gender: str | None = None
-    age: int | None = Field(default=None, ge=1, le=150)
-    height: float | None = Field(default=None, ge=50, le=250, multiple_of=0.1)
-    weight: float | None = Field(default=None, gt=0, lt=500, multiple_of=0.1)
+    age: int | None = Field(default=None, ge=0, le=200)
+    height: float | None = Field(default=None, ge=0, le=250, multiple_of=0.1)
+    weight: float | None = Field(default=None, ge=0, le=1000, multiple_of=0.1)
 
 
 class ProfileIn(BaseModel):
     gender: str | None = None
-    age: int | None = Field(default=None, ge=1, le=150)
-    height: float | None = Field(default=None, ge=50, le=250, multiple_of=0.1)
-    weight: float | None = Field(default=None, gt=0, lt=500, multiple_of=0.1)
+    age: int | None = Field(default=None, ge=0, le=200)
+    height: float | None = Field(default=None, ge=0, le=250, multiple_of=0.1)
+    weight: float | None = Field(default=None, ge=0, le=1000, multiple_of=0.1)
 
 
 class LoginIn(BaseModel):
@@ -273,7 +273,7 @@ def auth_page(mode: str) -> str:
     switch_action = "회원가입" if is_login else "로그인"
     login_field = "" if is_login else '<label>닉네임<input id="username" placeholder="2자 이상 입력" /></label>'
     if not is_login:
-        login_field += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>성별<select id="gender"><option value="">선택 안 함</option><option>여성</option><option>남성</option><option>기타</option></select></label><label>나이<input id="age" type="number" min="1" max="150" step="1" placeholder="나이"></label></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>키(cm)<input id="height" type="number" min="50" max="250" step="0.1" placeholder="키"></label><label>몸무게(kg)<input id="weight" type="number" min="0.1" max="499.9" step="0.1" placeholder="몸무게"></label></div>'
+        login_field += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>성별<select id="gender"><option value="">선택 안 함</option><option>여성</option><option>남성</option><option>기타</option></select></label><label>나이<input id="age" type="number" min="0" max="200" step="1" placeholder="나이"></label></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>키(cm)<input id="height" type="number" min="0" max="250" step="0.1" placeholder="키"></label><label>몸무게(kg)<input id="weight" type="number" min="0" max="1000" step="0.1" placeholder="몸무게"></label></div>'
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{action} · 마이 헬스 로그</title>
@@ -426,8 +426,8 @@ def update_profile(payload: ProfileIn, request: Request):
 
 class RecordIn(BaseModel):
     date: str
-    weight: float = Field(gt=0, multiple_of=0.1, description="몸무게(kg), 소수점 첫째 자리까지")
-    height: float = Field(gt=0, multiple_of=0.1, description="키(cm), 소수점 첫째 자리까지")
+    weight: float = Field(gt=0, le=1000, multiple_of=0.1, description="몸무게(kg), 0~1000")
+    height: float = Field(gt=0, le=250, multiple_of=0.1, description="키(cm), 0~250")
     systolic: int = Field(ge=0, le=250, description="수축기 혈압, 0~250")
     diastolic: int = Field(ge=0, le=250, description="이완기 혈압, 0~250")
     blood_sugar: int = Field(ge=0, le=1000, description="공복 혈당, 0~1000")
@@ -448,15 +448,15 @@ class RecordIn(BaseModel):
     @field_validator("weight")
     @classmethod
     def validate_weight_range(cls, value: float):
-        if value >= 500:
-            raise ValueError("몸무게는 500kg 미만이어야 합니다.")
+        if value > 1000:
+            raise ValueError("몸무게는 1000kg 이하만 가능합니다.")
         return value
 
     @field_validator("height")
     @classmethod
     def validate_height_range(cls, value: float):
-        if value < 50 or value > 250:
-            raise ValueError("키는 50cm 이상 250cm 이하만 가능합니다.")
+        if value <= 0 or value > 250:
+            raise ValueError("건강 기록의 키는 0보다 크고 250cm 이하만 가능합니다.")
         return value
 
     @field_validator("date")
@@ -1598,7 +1598,7 @@ def dashboard(request: Request):
 
             <section class="card" style="margin-bottom:18px">
                 <div class="card-title"><div><h2>내 프로필 설정</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">키와 몸무게를 저장하면 건강 기록 입력 때 자동으로 채워져요.</div></div><span>⚙️</span></div>
-                <form id="profile-form" class="event-form"><select id="profile-gender"><option value="">성별 선택</option><option>여성</option><option>남성</option><option>기타</option></select><input id="profile-age" type="number" min="1" max="150" step="1" placeholder="나이"><input id="profile-height" type="number" min="50" max="250" step="0.1" placeholder="키(cm)"><input id="profile-weight" type="number" min="0.1" max="499.9" step="0.1" placeholder="몸무게(kg)"><button type="submit">프로필 저장</button></form><div id="profile-message" class="event-message"></div>
+                <form id="profile-form" class="event-form"><select id="profile-gender"><option value="">성별 선택</option><option>여성</option><option>남성</option><option>기타</option></select><input id="profile-age" type="number" min="0" max="200" step="1" placeholder="나이"><input id="profile-height" type="number" min="0" max="250" step="0.1" placeholder="키(cm)"><input id="profile-weight" type="number" min="0" max="1000" step="0.1" placeholder="몸무게(kg)"><button type="submit">프로필 저장</button></form><div id="profile-message" class="event-message"></div>
             </section>
 
             <section class="card quick-event">
@@ -1831,7 +1831,7 @@ def dashboard(request: Request):
             dateInput.max = localDateKey();
             dateInput.value = localDateKey();
             const inputLimits = {
-                weight: [0.0001, 499.9], height: [50, 250],
+                weight: [0, 1000], height: [0, 250],
                 systolic: [0, 250], diastolic: [0, 250],
                 blood_sugar: [0, 1000], steps: [0, 100000000], sleep_hours: [0, 24]
             };
@@ -1902,9 +1902,9 @@ def dashboard(request: Request):
             }
 
             const profileInputLimits = {
-                'profile-age': [1, 150, true],
-                'profile-height': [50, 250, false],
-                'profile-weight': [0.0001, 499.9, false]
+                'profile-age': [0, 200, true],
+                'profile-height': [0, 250, false],
+                'profile-weight': [0, 1000, false]
             };
             Object.entries(profileInputLimits).forEach(([id, [min, max, integerOnly]]) => {
                 const input = document.getElementById(id);
@@ -1950,9 +1950,9 @@ def dashboard(request: Request):
                 const ageValue = document.getElementById('profile-age').value;
                 const heightValue = document.getElementById('profile-height').value;
                 const weightValue = document.getElementById('profile-weight').value;
-                if (ageValue && (!Number.isInteger(Number(ageValue)) || Number(ageValue) < 1 || Number(ageValue) > 150) ||
-                    heightValue && (Number(heightValue) < 50 || Number(heightValue) > 250) ||
-                    weightValue && (Number(weightValue) <= 0 || Number(weightValue) >= 500)) {
+                if (ageValue && (!Number.isInteger(Number(ageValue)) || Number(ageValue) < 0 || Number(ageValue) > 200) ||
+                    heightValue && (Number(heightValue) < 0 || Number(heightValue) > 250) ||
+                    weightValue && (Number(weightValue) < 0 || Number(weightValue) > 1000)) {
                     message.textContent = '나이·키·몸무게의 허용 범위를 확인해주세요.';
                     return;
                 }

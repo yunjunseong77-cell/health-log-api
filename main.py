@@ -12,6 +12,7 @@ import time
 import os
 from pathlib import Path
 from datetime import date as date_type, datetime
+from zoneinfo import ZoneInfo
 
 
 # -----------------------------
@@ -51,6 +52,7 @@ app = FastAPI(
 
 DB_FILE = Path(__file__).resolve().parent / "health_records.db"
 JSON_FILE = Path(__file__).resolve().parent / "data.json"
+KST = ZoneInfo("Asia/Seoul")
 
 
 def get_connection():
@@ -954,7 +956,8 @@ def custom_docs():
 )
 def create_event(event: EventIn, request: Request):
     user = require_session_user(request)
-    occurred_at = event.occurred_at.strip() or datetime.now().isoformat(timespec="minutes")
+    # AWS Ubuntu 서버의 기본 시간은 UTC이므로, 사용자에게 보이는 기록 시각은 한국 시간으로 저장합니다.
+    occurred_at = event.occurred_at.strip() or datetime.now(KST).isoformat(timespec="minutes")
 
     connection = get_connection()
     cursor = connection.execute(
@@ -1107,11 +1110,8 @@ def dashboard(request: Request):
             .logout-button { width: auto; margin: 0; padding: 9px 14px; color: #18342b; background: #fff; box-shadow: none; font-size: 13px; }
             .logout-button:hover { background: #fff; box-shadow: 0 8px 18px rgba(102, 85, 216, .16); }
             .quick-event { margin-top: 22px; background: #fff; }
-            .event-form { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; }
+            .event-form { display: grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: center; }
             .event-form select { border: 1px solid #e6e1f6; border-radius: 13px; padding: 11px 12px; color: var(--ink); background: #fff; font: inherit; }
-            .event-form button { width: auto; margin: 0; padding: 11px 16px; }
-            .voice-button { background: #5f8df7; box-shadow: none; }
-            .voice-button:hover { background: #4678e8; box-shadow: 0 8px 18px rgba(70, 120, 232, .22); }
             .event-message { min-height: 20px; margin-top: 10px; color: var(--purple-dark); font-size: 13px; }
             .event-list { display: grid; gap: 8px; margin-top: 12px; }
             .event-item { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 11px 13px; border-radius: 13px; background: rgba(255,255,255,.8); border: 1px solid #e7f1eb; font-size: 13px; }
@@ -1165,6 +1165,24 @@ def dashboard(request: Request):
             .metric .value { margin-top: 3px; font-size: 25px; font-weight: 750; }
 
             .records { margin-top: 22px; }
+            .calendar-card { margin-top: 22px; }
+            .calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+            .calendar-toolbar strong { font-size: 18px; }
+            .calendar-nav { display: flex; gap: 6px; }
+            .calendar-nav button { width: auto; margin: 0; padding: 7px 11px; color: var(--ink); background: #eef6f1; box-shadow: none; font-size: 13px; }
+            .calendar-nav button:hover { background: #dff0e7; box-shadow: none; }
+            .calendar-week, .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+            .calendar-week { margin-bottom: 5px; color: var(--muted); text-align: center; font-size: 12px; font-weight: 700; }
+            .calendar-day { min-height: 64px; margin: 0; padding: 8px 4px; border: 1px solid #e5ebe8; border-radius: 10px; color: var(--ink); background: #fff; box-shadow: none; font-size: 13px; }
+            .calendar-day:hover { transform: none; border-color: var(--purple); background: #f3fbf6; box-shadow: none; }
+            .calendar-day.selected { border: 2px solid var(--purple); background: #eaf7f0; }
+            .calendar-day.today { color: var(--purple-dark); font-weight: 700; }
+            .calendar-day.empty-day { visibility: hidden; }
+            .calendar-counts { display: flex; justify-content: center; gap: 3px; margin-top: 7px; color: var(--purple-dark); font-size: 10px; }
+            .calendar-detail { margin-top: 16px; padding-top: 15px; border-top: 1px solid #e5ebe8; }
+            .calendar-detail h3 { margin-bottom: 10px; font-size: 16px; }
+            .calendar-detail-row { padding: 8px 0; border-bottom: 1px solid #f0f3f1; font-size: 13px; }
+            .calendar-detail-row small { display: block; margin-top: 3px; color: var(--muted); }
             .record { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 17px 0; border-bottom: 1px solid #f0edf8; }
             .record:last-child { border-bottom: 0; }
             .record-main { min-width: 0; }
@@ -1187,7 +1205,6 @@ def dashboard(request: Request):
                 .layout { grid-template-columns: 1fr; }
                 .summary { grid-template-columns: repeat(2, 1fr); }
                 .event-form { grid-template-columns: 1fr; }
-                .event-form button { width: 100%; }
             }
             @media (max-width: 520px) {
                 .wrap { width: min(100% - 20px, 1080px); padding-top: 14px; }
@@ -1218,11 +1235,18 @@ def dashboard(request: Request):
                         <option>음료·카페인</option><option>식사</option><option>운동</option><option>수면</option><option>기분·스트레스</option><option>기타</option>
                     </select>
                     <input id="event-text" type="text" maxlength="500" placeholder="예: 아이스아메리카노 마셨어" required>
-                    <button id="voice-button" class="voice-button" type="button">🎙️ 말로 기록</button>
                 </form>
                 <button id="event-save" type="submit" form="event-form">이벤트 저장하기</button>
                 <div id="event-message" class="event-message"></div>
                 <div id="event-list" class="event-list"></div>
+            </section>
+
+            <section class="card calendar-card">
+                <div class="card-title"><div><h2>날짜별 기록 보기</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">날짜를 클릭하면 그날의 건강 기록과 생활 이벤트를 확인할 수 있어요.</div></div><span>▦</span></div>
+                <div class="calendar-toolbar"><strong id="calendar-month"></strong><div class="calendar-nav"><button id="prev-month" type="button">‹ 이전</button><button id="today-month" type="button">오늘</button><button id="next-month" type="button">다음 ›</button></div></div>
+                <div class="calendar-week"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
+                <div id="calendar-grid" class="calendar-grid"></div>
+                <div id="calendar-detail" class="calendar-detail"></div>
             </section>
 
             <div class="layout">
@@ -1291,6 +1315,57 @@ def dashboard(request: Request):
             const eventType = document.getElementById('event-type');
             const eventMessage = document.getElementById('event-message');
             const eventList = document.getElementById('event-list');
+            const calendarMonth = document.getElementById('calendar-month');
+            const calendarGrid = document.getElementById('calendar-grid');
+            const calendarDetail = document.getElementById('calendar-detail');
+            let calendarDate = new Date();
+            let calendarRecords = [];
+            let calendarEvents = [];
+
+            function localDateKey(date = new Date()) {
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            }
+
+            function renderCalendar() {
+                const year = calendarDate.getFullYear();
+                const month = calendarDate.getMonth();
+                calendarMonth.textContent = `${year}년 ${month + 1}월`;
+                calendarGrid.innerHTML = '';
+                const firstDay = new Date(year, month, 1).getDay();
+                const lastDate = new Date(year, month + 1, 0).getDate();
+                const selected = calendarDetail.dataset.date || localDateKey();
+                for (let i = 0; i < firstDay; i++) {
+                    const blank = document.createElement('div');
+                    blank.className = 'calendar-day empty-day';
+                    calendarGrid.appendChild(blank);
+                }
+                for (let day = 1; day <= lastDate; day++) {
+                    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const recordCount = calendarRecords.filter(record => record.date === key).length;
+                    const eventCount = calendarEvents.filter(event => event.occurred_at.startsWith(key)).length;
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = `calendar-day ${key === selected ? 'selected' : ''} ${key === localDateKey() ? 'today' : ''}`;
+                    button.innerHTML = `<span>${day}</span><span class="calendar-counts">${recordCount ? `♥ ${recordCount}` : ''}${eventCount ? ` · ✦ ${eventCount}` : ''}</span>`;
+                    button.addEventListener('click', () => selectCalendarDate(key));
+                    calendarGrid.appendChild(button);
+                }
+            }
+
+            function selectCalendarDate(key) {
+                calendarDetail.dataset.date = key;
+                renderCalendar();
+                const records = calendarRecords.filter(record => record.date === key);
+                const events = calendarEvents.filter(event => event.occurred_at.startsWith(key));
+                calendarDetail.innerHTML = `<h3>${key} 기록</h3>${records.length ? records.map(record => `<div class="calendar-detail-row">건강 기록 · BMI ${escapeHtml(record.bmi)} · ${escapeHtml(record.weight)}kg<small>혈압 ${escapeHtml(record.systolic)}/${escapeHtml(record.diastolic)} · 걸음 ${escapeHtml(record.steps)} · ${escapeHtml(record.memo || '메모 없음')}</small></div>`).join('') : ''}${events.length ? events.map(event => `<div class="calendar-detail-row">${escapeHtml(event.event_type)} · ${escapeHtml(event.raw_text)}<small>${escapeHtml(event.occurred_at.replace('T', ' '))}</small></div>`).join('') : ''}${!records.length && !events.length ? '<div class="empty" style="padding:12px 0">이 날짜에는 저장된 기록이 없어요.</div>' : ''}`;
+            }
+
+            document.getElementById('prev-month').addEventListener('click', () => { calendarDate.setMonth(calendarDate.getMonth() - 1); renderCalendar(); });
+            document.getElementById('next-month').addEventListener('click', () => { calendarDate.setMonth(calendarDate.getMonth() + 1); renderCalendar(); });
+            document.getElementById('today-month').addEventListener('click', () => { calendarDate = new Date(); selectCalendarDate(localDateKey()); });
 
             function renderEvents(events) {
                 eventList.innerHTML = '';
@@ -1323,6 +1398,12 @@ def dashboard(request: Request):
                 if (!response.ok) return;
                 const data = await response.json();
                 renderEvents(data.events);
+                const calendarResponse = await fetch('/events?limit=100');
+                if (calendarResponse.ok) {
+                    calendarEvents = (await calendarResponse.json()).events;
+                    renderCalendar();
+                    selectCalendarDate(calendarDetail.dataset.date || localDateKey());
+                }
             }
 
             eventForm.addEventListener('submit', async event => {
@@ -1341,31 +1422,6 @@ def dashboard(request: Request):
                 eventMessage.textContent = '기록했어요. 나중에 나만의 패턴을 찾아볼게요 ✨';
                 loadEvents();
             });
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            const voiceButton = document.getElementById('voice-button');
-            if (!window.isSecureContext) {
-                voiceButton.disabled = true;
-                voiceButton.textContent = '🔒 HTTPS에서 사용 가능';
-                eventMessage.textContent = '음성 입력은 HTTPS 연결에서만 사용할 수 있어요. 현재는 글로 기록해 주세요.';
-            } else if (SpeechRecognition) {
-                const recognition = new SpeechRecognition();
-                recognition.lang = 'ko-KR';
-                recognition.interimResults = false;
-                voiceButton.addEventListener('click', () => {
-                    eventMessage.textContent = '듣고 있어요... 편하게 말해보세요 🎙️';
-                    recognition.start();
-                });
-                recognition.addEventListener('result', event => {
-                    eventText.value = event.results[0][0].transcript;
-                    eventMessage.textContent = '내용을 확인하고 이벤트 저장하기를 눌러주세요.';
-                    eventText.focus();
-                });
-                recognition.addEventListener('error', () => { eventMessage.textContent = '음성을 듣지 못했어요. 브라우저의 마이크 권한을 확인해 주세요.'; });
-            } else {
-                voiceButton.disabled = true;
-                voiceButton.textContent = '🎙️ 음성 미지원 브라우저';
-            }
 
             loadEvents();
 
@@ -1434,7 +1490,10 @@ def dashboard(request: Request):
             async function loadRecords() {
                 const response = await fetch('/records');
                 const payload = await response.json();
+                calendarRecords = payload.records;
                 renderRecords(payload);
+                renderCalendar();
+                selectCalendarDate(calendarDetail.dataset.date || localDateKey());
             }
 
             function fillForm(record) {

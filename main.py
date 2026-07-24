@@ -105,6 +105,17 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    user_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()
+    }
+    for column, definition in {
+        "gender": "TEXT",
+        "age": "INTEGER",
+        "height": "REAL",
+        "weight": "REAL",
+    }.items():
+        if column not in user_columns:
+            connection.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
 
     connection.execute("""
         CREATE TABLE IF NOT EXISTS events (
@@ -161,6 +172,17 @@ class SignupIn(BaseModel):
     username: str = Field(min_length=2, max_length=30)
     email: str = Field(min_length=5, max_length=120)
     password: str = Field(min_length=8, max_length=128)
+    gender: str | None = None
+    age: int | None = Field(default=None, ge=1, le=120)
+    height: float | None = Field(default=None, gt=0, le=250)
+    weight: float | None = Field(default=None, gt=0, le=500)
+
+
+class ProfileIn(BaseModel):
+    gender: str | None = None
+    age: int | None = Field(default=None, ge=1, le=120)
+    height: float | None = Field(default=None, gt=0, le=250)
+    weight: float | None = Field(default=None, gt=0, le=500)
 
 
 class LoginIn(BaseModel):
@@ -240,6 +262,8 @@ def auth_page(mode: str) -> str:
     switch_href = "/signup" if is_login else "/login"
     switch_action = "회원가입" if is_login else "로그인"
     login_field = "" if is_login else '<label>닉네임<input id="username" placeholder="2자 이상 입력" /></label>'
+    if not is_login:
+        login_field += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>성별<select id="gender"><option value="">선택 안 함</option><option>여성</option><option>남성</option><option>기타</option></select></label><label>나이<input id="age" type="number" min="1" max="120" placeholder="나이"></label></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label>키(cm)<input id="height" type="number" min="1" step="0.1" placeholder="키"></label><label>몸무게(kg)<input id="weight" type="number" min="1" step="0.1" placeholder="몸무게"></label></div>'
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{action} · 마이 헬스 로그</title>
@@ -259,7 +283,7 @@ document.getElementById('auth-form').addEventListener('submit', async (event) =>
   const message = document.getElementById('message');
   message.textContent = '처리 중이에요...';
   const body = {{login: document.getElementById('login').value, password: document.getElementById('password').value}};
-  {'body.username = document.getElementById(\'username\').value; body.email = body.login;' if not is_login else ''}
+  {'body.username = document.getElementById(\'username\').value; body.email = body.login; body.gender = document.getElementById(\'gender\').value || null; body.age = Number(document.getElementById(\'age\').value) || null; body.height = Number(document.getElementById(\'height\').value) || null; body.weight = Number(document.getElementById(\'weight\').value) || null;' if not is_login else ''}
   const response = await fetch('/auth/{'login' if is_login else 'signup'}', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({'body' if is_login else 'body'})}});
   const data = await response.json();
   if (!response.ok) {{ message.textContent = data.detail || '다시 시도해주세요.'; return; }}
@@ -288,8 +312,8 @@ def signup(payload: SignupIn, request: Request):
             "SELECT COUNT(*) AS count FROM users"
         ).fetchone()["count"]
         cursor = connection.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
-            (username, email, hash_password(payload.password))
+            "INSERT INTO users (username, email, password_hash, gender, age, height, weight) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username, email, hash_password(payload.password), payload.gender, payload.age, payload.height, payload.weight)
         )
 
         # 인증 기능을 추가하기 전부터 있던 기록은 첫 계정의 기록으로 연결합니다.
@@ -344,6 +368,36 @@ def logout(response: Response, request: Request):
 # -----------------------------
 # 입력 데이터 형식
 # -----------------------------
+
+@app.get("/profile")
+def get_profile(request: Request):
+    user = require_session_user(request)
+    connection = get_connection()
+    row = connection.execute(
+        "SELECT id, username, email, gender, age, height, weight, created_at FROM users WHERE id = ?",
+        (user["id"],)
+    ).fetchone()
+    connection.close()
+    return dict(row)
+
+
+@app.put("/profile")
+def update_profile(payload: ProfileIn, request: Request):
+    user = require_session_user(request)
+    connection = get_connection()
+    connection.execute(
+        "UPDATE users SET gender = ?, age = ?, height = ?, weight = ? WHERE id = ?",
+        (payload.gender, payload.age, payload.height, payload.weight, user["id"])
+    )
+    write_audit_log(connection, "profile_updated", user["email"], user["id"], request)
+    connection.commit()
+    row = connection.execute(
+        "SELECT id, username, email, gender, age, height, weight, created_at FROM users WHERE id = ?",
+        (user["id"],)
+    ).fetchone()
+    connection.close()
+    return dict(row)
+
 
 class RecordIn(BaseModel):
     date: str
@@ -1356,6 +1410,11 @@ def dashboard(request: Request):
                 </div>
             </section>
 
+            <section class="card" style="margin-bottom:18px">
+                <div class="card-title"><div><h2>내 프로필 설정</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">키와 몸무게를 저장하면 건강 기록 입력 때 자동으로 채워져요.</div></div><span>⚙️</span></div>
+                <form id="profile-form" class="event-form"><select id="profile-gender"><option value="">성별 선택</option><option>여성</option><option>남성</option><option>기타</option></select><input id="profile-age" type="number" min="1" max="120" placeholder="나이"><input id="profile-height" type="number" min="1" step="0.1" placeholder="키(cm)"><input id="profile-weight" type="number" min="1" step="0.1" placeholder="몸무게(kg)"><button type="submit">프로필 저장</button></form><div id="profile-message" class="event-message"></div>
+            </section>
+
             <section class="card quick-event">
                 <div class="card-title"><div><h2>지금 무슨 일이 있었나요?</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">커피 한 잔도, 늦은 잠도 나를 이해하는 단서가 돼요.</div></div><span>⚡</span></div>
                 <form id="event-form" class="event-form">
@@ -1615,6 +1674,31 @@ def dashboard(request: Request):
                 `).join('');
             }
 
+            async function loadProfile() {
+                const response = await fetch('/profile');
+                if (!response.ok) return;
+                const profile = await response.json();
+                document.getElementById('profile-gender').value = profile.gender || '';
+                document.getElementById('profile-age').value = profile.age || '';
+                document.getElementById('profile-height').value = profile.height || '';
+                document.getElementById('profile-weight').value = profile.weight || '';
+                if (profile.height) document.getElementById('height').value = profile.height;
+                if (profile.weight) document.getElementById('weight').value = profile.weight;
+            }
+
+            document.getElementById('profile-form').addEventListener('submit', async event => {
+                event.preventDefault();
+                const message = document.getElementById('profile-message');
+                const response = await fetch('/profile', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+                    gender: document.getElementById('profile-gender').value || null,
+                    age: Number(document.getElementById('profile-age').value) || null,
+                    height: Number(document.getElementById('profile-height').value) || null,
+                    weight: Number(document.getElementById('profile-weight').value) || null
+                })});
+                message.textContent = response.ok ? '프로필을 저장했어요.' : '프로필 저장에 실패했어요.';
+                if (response.ok) await loadProfile();
+            });
+
             async function loadRecords() {
                 const response = await fetch('/records');
                 const payload = await response.json();
@@ -1718,6 +1802,7 @@ def dashboard(request: Request):
                 await loadRecords();
             });
 
+            loadProfile().catch(() => {});
             loadRecords().catch(() => {
                 document.getElementById('records').innerHTML = '<div class="empty">기록을 불러오지 못했어요.</div>';
             });

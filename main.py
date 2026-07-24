@@ -11,7 +11,7 @@ import secrets
 import time
 import os
 from pathlib import Path
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 
 
 # -----------------------------
@@ -103,6 +103,20 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            occurred_at TEXT NOT NULL,
+            raw_text TEXT NOT NULL,
+            event_type TEXT NOT NULL DEFAULT '기타',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(user_id, occurred_at)"
+    )
 
     connection.commit()
     connection.close()
@@ -303,6 +317,12 @@ class RecordIn(BaseModel):
         return value
 
 
+class EventIn(BaseModel):
+    raw_text: str = Field(min_length=1, max_length=500, description="생활 이벤트 원문")
+    event_type: str = Field(default="기타", max_length=30, description="이벤트 종류")
+    occurred_at: str = Field(default="", description="발생 시각")
+
+
 # -----------------------------
 # 건강 분석 함수
 # -----------------------------
@@ -398,6 +418,10 @@ def row_to_record(row):
     record["warnings"] = json.loads(record["warnings"])
 
     return record
+
+
+def row_to_event(row):
+    return dict(row)
 
 
 def save_json_snapshot(connection=None):
@@ -922,6 +946,96 @@ def custom_docs():
     return HTMLResponse(page.replace("</body>", helper + "</body>"))
 
 
+@app.post(
+    "/events",
+    summary="생활 이벤트 빠른 기록",
+    description="커피, 식사, 운동 등 생활 중 발생한 이벤트를 저장합니다.",
+    tags=["건강 기록"]
+)
+def create_event(event: EventIn, request: Request):
+    user = require_session_user(request)
+    occurred_at = event.occurred_at.strip() or datetime.now().isoformat(timespec="minutes")
+
+    connection = get_connection()
+    cursor = connection.execute(
+        """
+        INSERT INTO events (user_id, occurred_at, raw_text, event_type)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user["id"], occurred_at, event.raw_text.strip(), event.event_type.strip() or "기타")
+    )
+    connection.commit()
+    row = connection.execute(
+        "SELECT * FROM events WHERE id = ? AND user_id = ?",
+        (cursor.lastrowid, user["id"])
+    ).fetchone()
+    connection.close()
+    return row_to_event(row)
+
+
+@app.get(
+    "/events",
+    summary="생활 이벤트 조회",
+    description="로그인한 사용자의 최근 생활 이벤트를 조회합니다.",
+    tags=["건강 기록"]
+)
+def get_events(request: Request, limit: int = 30):
+    user = require_session_user(request)
+    limit = max(1, min(limit, 100))
+    connection = get_connection()
+    rows = connection.execute(
+        "SELECT * FROM events WHERE user_id = ? ORDER BY occurred_at DESC, id DESC LIMIT ?",
+        (user["id"], limit)
+    ).fetchall()
+    connection.close()
+    return {"count": len(rows), "events": [row_to_event(row) for row in rows]}
+
+
+@app.delete(
+    "/events/{event_id}",
+    summary="생활 이벤트 삭제",
+    description="로그인한 사용자의 생활 이벤트 하나를 삭제합니다.",
+    tags=["건강 기록"]
+)
+def delete_event(event_id: int, request: Request):
+    user = require_session_user(request)
+    connection = get_connection()
+    row = connection.execute(
+        "SELECT * FROM events WHERE id = ? AND user_id = ?",
+        (event_id, user["id"])
+    ).fetchone()
+    if row is None:
+        connection.close()
+        raise HTTPException(status_code=404, detail="해당 이벤트를 찾을 수 없습니다.")
+    connection.execute(
+        "DELETE FROM events WHERE id = ? AND user_id = ?",
+        (event_id, user["id"])
+    )
+    connection.commit()
+    connection.close()
+    return {"message": "이벤트가 삭제되었습니다.", "event": row_to_event(row)}
+
+
+@app.get("/welcome", response_class=HTMLResponse, include_in_schema=False)
+def welcome_page(request: Request):
+    if get_session_user(request) is not None:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    return HTMLResponse("""
+    <!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>내 몸의 실험실</title>
+    <style>
+    *{box-sizing:border-box}body{margin:0;background:#f7fbf8;color:#18342d;font-family:Arial,'Malgun Gothic',sans-serif}.wrap{width:min(1120px,calc(100% - 36px));margin:auto;padding:28px 0 70px}.nav{display:flex;justify-content:space-between;align-items:center}.brand{font-weight:800;font-size:20px}.brand span{color:#19a974}.nav a{margin-left:16px;color:#47716a;text-decoration:none;font-weight:700}.hero{margin-top:42px;padding:68px 58px;border-radius:32px;background:linear-gradient(135deg,#d9f7e8,#fff3dc);display:grid;grid-template-columns:1.1fr .9fr;gap:30px;overflow:hidden;position:relative}.eyebrow{color:#169b68;font-weight:800;letter-spacing:.08em}.hero h1{font-size:clamp(42px,7vw,78px);line-height:1.05;margin:18px 0;color:#163a30;letter-spacing:-.07em}.hero p{font-size:19px;line-height:1.7;color:#53736a;max-width:570px}.cta{display:inline-block;margin-top:20px;padding:15px 24px;background:#1fae76;color:white;border-radius:14px;text-decoration:none;font-weight:800;box-shadow:0 12px 24px #1fae7633}.visual{display:flex;align-items:center;justify-content:center;font-size:150px;filter:drop-shadow(0 20px 18px #669f8235)}.features{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px}.feature{padding:24px;border-radius:22px;background:white;border:1px solid #e2eee8;box-shadow:0 12px 30px #4d866c12}.feature b{font-size:18px}.feature p{color:#6a837b;line-height:1.6}.note{margin-top:22px;color:#789088;font-size:13px}@media(max-width:720px){.hero{grid-template-columns:1fr;padding:40px 28px}.visual{font-size:100px}.features{grid-template-columns:1fr}.nav a{margin-left:8px;font-size:13px}}
+    </style></head><body><main class="wrap"><nav class="nav"><div class="brand">🌿 <span>내 몸의 실험실</span></div><div><a href="/login">로그인</a><a href="/signup">시작하기</a></div></nav><section class="hero"><div><div class="eyebrow">BODY LAB</div><h1>작은 사건이<br>나를 설명해요.</h1><p>커피 한 잔, 늦은 잠, 운동 한 번.<br>생활 속 순간을 가볍게 기록하고 나만의 몸 반응을 발견해보세요.</p><a class="cta" href="/signup">내 실험실 만들기 →</a></div><div class="visual">🪴</div></section><section class="features"><article class="feature"><b>⚡ 바로 기록</b><p>기억이 사라지기 전에 생활 이벤트를 한 줄로 남겨요.</p></article><article class="feature"><b>🧪 나만의 실험</b><p>남과 비교하지 않고 어제의 나와 생활 습관을 비교해요.</p></article><article class="feature"><b>🔐 내 데이터는 나만</b><p>로그인한 사용자별로 건강 기록과 이벤트를 분리해서 보관해요.</p></article></section><p class="note">이 서비스의 건강 분류는 학습용 참고 정보이며 의학적 진단을 대신하지 않습니다.</p></main></body></html>
+    """)
+
+
+@app.get("/app", include_in_schema=False)
+def app_entry(request: Request):
+    if get_session_user(request) is not None:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    return RedirectResponse(url="/welcome", status_code=303)
+
+
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 def dashboard(request: Request):
     if get_session_user(request) is None:
@@ -994,6 +1108,18 @@ def dashboard(request: Request):
             .hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; position: relative; z-index: 1; }
             .logout-button { width: auto; margin: 0; padding: 9px 14px; color: var(--purple-dark); background: rgba(255,255,255,.82); box-shadow: none; font-size: 13px; }
             .logout-button:hover { background: #fff; box-shadow: 0 8px 18px rgba(102, 85, 216, .16); }
+            .quick-event { margin-top: 22px; background: linear-gradient(135deg, #ffffff, #f1fff8); }
+            .event-form { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; }
+            .event-form select { border: 1px solid #e6e1f6; border-radius: 13px; padding: 11px 12px; color: var(--ink); background: #fff; font: inherit; }
+            .event-form button { width: auto; margin: 0; padding: 11px 16px; }
+            .voice-button { background: #5f8df7; box-shadow: none; }
+            .voice-button:hover { background: #4678e8; box-shadow: 0 8px 18px rgba(70, 120, 232, .22); }
+            .event-message { min-height: 20px; margin-top: 10px; color: var(--purple-dark); font-size: 13px; }
+            .event-list { display: grid; gap: 8px; margin-top: 12px; }
+            .event-item { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 11px 13px; border-radius: 13px; background: rgba(255,255,255,.8); border: 1px solid #e7f1eb; font-size: 13px; }
+            .event-item small { color: var(--muted); white-space: nowrap; }
+            .event-delete { width: auto !important; margin: 0 !important; padding: 5px 8px !important; border: 0; background: transparent; color: #b7aebe; box-shadow: none !important; font-size: 12px !important; }
+            .event-delete:hover { color: #d45748; background: transparent; }
 
             .layout { display: grid; grid-template-columns: 360px 1fr; gap: 22px; margin-top: 22px; }
             .card { background: rgba(255,255,255,.9); border: 1px solid #eeeafd; border-radius: 24px; padding: 24px; box-shadow: var(--shadow); }
@@ -1062,6 +1188,8 @@ def dashboard(request: Request):
             @media (max-width: 820px) {
                 .layout { grid-template-columns: 1fr; }
                 .summary { grid-template-columns: repeat(2, 1fr); }
+                .event-form { grid-template-columns: 1fr; }
+                .event-form button { width: 100%; }
             }
             @media (max-width: 520px) {
                 .wrap { width: min(100% - 20px, 1080px); padding-top: 14px; }
@@ -1083,6 +1211,20 @@ def dashboard(request: Request):
                     <button id="logout-button" class="logout-button" type="button">로그아웃</button>
                     <div class="mascot">🐰</div>
                 </div>
+            </section>
+
+            <section class="card quick-event">
+                <div class="card-title"><div><h2>지금 무슨 일이 있었나요?</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">커피 한 잔도, 늦은 잠도 나를 이해하는 단서가 돼요.</div></div><span>⚡</span></div>
+                <form id="event-form" class="event-form">
+                    <select id="event-type" aria-label="이벤트 종류">
+                        <option>음료·카페인</option><option>식사</option><option>운동</option><option>수면</option><option>기분·스트레스</option><option>기타</option>
+                    </select>
+                    <input id="event-text" type="text" maxlength="500" placeholder="예: 아이스아메리카노 마셨어" required>
+                    <button id="voice-button" class="voice-button" type="button">🎙️ 말로 기록</button>
+                </form>
+                <button id="event-save" type="submit" form="event-form">이벤트 저장하기</button>
+                <div id="event-message" class="event-message"></div>
+                <div id="event-list" class="event-list"></div>
             </section>
 
             <div class="layout">
@@ -1145,6 +1287,85 @@ def dashboard(request: Request):
                 await fetch('/auth/logout', { method: 'POST' });
                 location.href = '/login';
             });
+
+            const eventForm = document.getElementById('event-form');
+            const eventText = document.getElementById('event-text');
+            const eventType = document.getElementById('event-type');
+            const eventMessage = document.getElementById('event-message');
+            const eventList = document.getElementById('event-list');
+
+            function renderEvents(events) {
+                eventList.innerHTML = '';
+                if (!events.length) {
+                    eventList.innerHTML = '<div class="empty" style="padding:18px 0">아직 빠른 이벤트 기록이 없어요.</div>';
+                    return;
+                }
+                events.forEach(event => {
+                    const item = document.createElement('div');
+                    item.className = 'event-item';
+                    const text = document.createElement('div');
+                    text.textContent = `${event.event_type} · ${event.raw_text}`;
+                    const meta = document.createElement('small');
+                    meta.textContent = event.occurred_at.replace('T', ' ');
+                    const remove = document.createElement('button');
+                    remove.className = 'event-delete';
+                    remove.type = 'button';
+                    remove.textContent = '삭제';
+                    remove.addEventListener('click', async () => {
+                        const response = await fetch(`/events/${event.id}`, { method: 'DELETE' });
+                        if (response.ok) loadEvents();
+                    });
+                    item.append(text, meta, remove);
+                    eventList.appendChild(item);
+                });
+            }
+
+            async function loadEvents() {
+                const response = await fetch('/events?limit=8');
+                if (!response.ok) return;
+                const data = await response.json();
+                renderEvents(data.events);
+            }
+
+            eventForm.addEventListener('submit', async event => {
+                event.preventDefault();
+                eventMessage.textContent = '저장 중이에요...';
+                const response = await fetch('/events', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({raw_text: eventText.value, event_type: eventType.value})
+                });
+                if (!response.ok) {
+                    eventMessage.textContent = '이벤트를 저장하지 못했어요.';
+                    return;
+                }
+                eventText.value = '';
+                eventMessage.textContent = '기록했어요. 나중에 나만의 패턴을 찾아볼게요 ✨';
+                loadEvents();
+            });
+
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const voiceButton = document.getElementById('voice-button');
+            if (SpeechRecognition) {
+                const recognition = new SpeechRecognition();
+                recognition.lang = 'ko-KR';
+                recognition.interimResults = false;
+                voiceButton.addEventListener('click', () => {
+                    eventMessage.textContent = '듣고 있어요... 편하게 말해보세요 🎙️';
+                    recognition.start();
+                });
+                recognition.addEventListener('result', event => {
+                    eventText.value = event.results[0][0].transcript;
+                    eventMessage.textContent = '내용을 확인하고 이벤트 저장하기를 눌러주세요.';
+                    eventText.focus();
+                });
+                recognition.addEventListener('error', () => { eventMessage.textContent = '음성을 듣지 못했어요. 글로 입력해도 괜찮아요.'; });
+            } else {
+                voiceButton.disabled = true;
+                voiceButton.textContent = '🎙️ 음성 미지원 브라우저';
+            }
+
+            loadEvents();
 
             const form = document.getElementById('record-form');
             const message = document.getElementById('message');

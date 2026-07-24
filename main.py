@@ -413,10 +413,10 @@ class RecordIn(BaseModel):
     date: str
     weight: float = Field(gt=0, description="몸무게(kg), 0보다 커야 합니다.")
     height: float = Field(gt=0, description="키(cm), 0보다 커야 합니다.")
-    systolic: int = Field(gt=0, description="수축기 혈압, 0보다 커야 합니다.")
-    diastolic: int = Field(gt=0, description="이완기 혈압, 0보다 커야 합니다.")
-    blood_sugar: int = Field(ge=0, description="공복 혈당, 0 이상이어야 합니다.")
-    steps: int = Field(default=0, ge=0, description="걸음 수, 0 이상이어야 합니다.")
+    systolic: int = Field(ge=0, le=250, description="수축기 혈압, 0~250")
+    diastolic: int = Field(ge=0, le=250, description="이완기 혈압, 0~250")
+    blood_sugar: int = Field(ge=0, le=1000, description="공복 혈당, 0~1000")
+    steps: int = Field(default=0, ge=0, le=100000000, description="걸음 수, 0~100000000")
     sleep_hours: float = Field(default=0.0, ge=0, description="수면 시간, 0 이상이어야 합니다.")
     memo: str = ""
 
@@ -455,15 +455,15 @@ class RecordIn(BaseModel):
     @field_validator("systolic")
     @classmethod
     def validate_systolic_range(cls, value: int):
-        if value < 30 or value > 300:
-            raise ValueError("수축기 혈압은 30~300 범위만 가능합니다.")
+        if value < 0 or value > 250:
+            raise ValueError("수축기 혈압은 0~250 범위만 가능합니다.")
         return value
 
     @field_validator("diastolic")
     @classmethod
     def validate_diastolic_range(cls, value: int):
-        if value < 20 or value > 200:
-            raise ValueError("이완기 혈압은 20~200 범위만 가능합니다.")
+        if value < 0 or value > 250:
+            raise ValueError("이완기 혈압은 0~250 범위만 가능합니다.")
         return value
 
     @field_validator("blood_sugar")
@@ -476,8 +476,8 @@ class RecordIn(BaseModel):
     @field_validator("steps")
     @classmethod
     def validate_steps_range(cls, value: int):
-        if value > 200000:
-            raise ValueError("걸음 수는 200,000 이하만 가능합니다.")
+        if value > 100000000:
+            raise ValueError("걸음 수는 100,000,000 이하만 가능합니다.")
         return value
 
     @field_validator("sleep_hours")
@@ -1107,6 +1107,7 @@ def custom_docs():
   };
 
   const quickForm=document.getElementById('quick-record-form');
+  [['quick-systolic',0,250],['quick-diastolic',0,250],['quick-sugar',0,1000],['quick-steps',0,100000000]].forEach(([id,min,max])=>{const input=document.getElementById(id);if(!input)return;input.min=min;input.max=max;input.addEventListener('input',()=>{if(input.value==='')return;const value=Number(input.value);if(value>max)input.value=String(max);if(value<min)input.value=String(min);});});
   const postMessage=document.getElementById('post-message');
   document.getElementById('quick-date').value=new Date().toISOString().slice(0,10);
   quickForm.addEventListener('submit', async (event) => {
@@ -1633,15 +1634,15 @@ def dashboard(request: Request):
                         </div>
 
                         <div class="two">
-                            <div><label for="systolic">수축기 혈압</label><input id="systolic" type="number" min="1" required></div>
-                            <div><label for="diastolic">이완기 혈압</label><input id="diastolic" type="number" min="1" required></div>
+                            <div><label for="systolic">수축기 혈압</label><input id="systolic" type="number" min="0" max="250" required></div>
+                            <div><label for="diastolic">이완기 혈압</label><input id="diastolic" type="number" min="0" max="250" required></div>
                         </div>
 
                         <label for="blood_sugar">공복 혈당 (mg/dL)</label>
-                        <input id="blood_sugar" type="number" min="1" required>
+                        <input id="blood_sugar" type="number" min="0" max="1000" required>
 
                         <div class="two">
-                            <div><label for="steps">걸음 수</label><input id="steps" type="number" min="0" value="0"></div>
+                            <div><label for="steps">걸음 수</label><input id="steps" type="number" min="0" max="100000000" value="0"></div>
                             <div><label for="sleep_hours">수면 시간</label><input id="sleep_hours" type="number" step="0.1" min="0" value="0"></div>
                         </div>
 
@@ -1814,6 +1815,24 @@ def dashboard(request: Request):
             let editingId = null;
             dateInput.max = localDateKey();
             dateInput.value = localDateKey();
+            const inputLimits = {
+                weight: [0.0001, 499.9], height: [50, 250],
+                systolic: [0, 250], diastolic: [0, 250],
+                blood_sugar: [0, 1000], steps: [0, 100000000], sleep_hours: [0, 24]
+            };
+            Object.entries(inputLimits).forEach(([id, [min, max]]) => {
+                const input = document.getElementById(id);
+                if (!input) return;
+                input.min = min;
+                input.max = max;
+                input.addEventListener('input', () => {
+                    if (input.value === '') return;
+                    const value = Number(input.value);
+                    if (!Number.isFinite(value)) { input.value = ''; return; }
+                    if (value > max) input.value = String(max);
+                    if (value < min) input.value = String(min);
+                });
+            });
 
             function escapeHtml(value) {
                 return String(value ?? '').replace(/[&<>'"]/g, char => ({

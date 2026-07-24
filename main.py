@@ -184,15 +184,15 @@ class SignupIn(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     gender: str | None = None
     age: int | None = Field(default=None, ge=1, le=150)
-    height: float | None = Field(default=None, ge=50, le=250)
-    weight: float | None = Field(default=None, gt=0, lt=500)
+    height: float | None = Field(default=None, ge=50, le=250, multiple_of=0.1)
+    weight: float | None = Field(default=None, gt=0, lt=500, multiple_of=0.1)
 
 
 class ProfileIn(BaseModel):
     gender: str | None = None
     age: int | None = Field(default=None, ge=1, le=150)
-    height: float | None = Field(default=None, ge=50, le=250)
-    weight: float | None = Field(default=None, gt=0, lt=500)
+    height: float | None = Field(default=None, ge=50, le=250, multiple_of=0.1)
+    weight: float | None = Field(default=None, gt=0, lt=500, multiple_of=0.1)
 
 
 class LoginIn(BaseModel):
@@ -288,6 +288,21 @@ button{{width:100%;border:0;border-radius:12px;padding:15px;background:#29b77d;c
 @media(max-width:700px){{.shell{{grid-template-columns:1fr}}.hero{{padding:34px}}.hero h1{{margin-top:50px}}.form{{padding:34px}}}}
 </style></head><body><main class="shell"><section class="hero"><div class="logo">🌿 마이 헬스 로그</div><h1>{title}</h1><p>{subtitle}<br>작은 기록이 나를 돌보는 습관이 돼요.</p></section><section class="form"><h2>{action}</h2><p class="subtitle">{subtitle}</p><form id="auth-form">{login_field}<label>{'이메일 또는 닉네임' if is_login else '이메일'}<input id="login" type="{'text' if is_login else 'email'}" placeholder="{'이메일 또는 닉네임 입력' if is_login else 'you@example.com'}" required /></label><label>비밀번호<input id="password" type="password" placeholder="8자 이상 입력" required /></label><button type="submit">{action}</button></form><div id="message" class="message"></div><p class="switch">{switch_text} <a href="{switch_href}">{switch_action}</a></p></section></main>
 <script>
+if (!{str(is_login).lower()}) {{
+  [['age', true], ['height', false], ['weight', false]].forEach(([id, integerOnly]) => {{
+    const input = document.getElementById(id);
+    input.addEventListener('keydown', event => {{
+      if (['-', '+', 'e', 'E'].includes(event.key)) event.preventDefault();
+      if (event.key === '.' && (integerOnly || input.value === '' || input.value.includes('.'))) event.preventDefault();
+    }});
+    input.addEventListener('input', () => {{
+      let value = input.value.replace(/[^0-9.]/g, '');
+      if (value.startsWith('.')) value = value.slice(1);
+      const parts = value.split('.');
+      input.value = parts[0] + (parts.length > 1 && !integerOnly ? '.' + parts[1].slice(0, 1) : '');
+    }});
+  }});
+}}
 document.getElementById('auth-form').addEventListener('submit', async (event) => {{
   event.preventDefault();
   const message = document.getElementById('message');
@@ -411,13 +426,13 @@ def update_profile(payload: ProfileIn, request: Request):
 
 class RecordIn(BaseModel):
     date: str
-    weight: float = Field(gt=0, description="몸무게(kg), 0보다 커야 합니다.")
-    height: float = Field(gt=0, description="키(cm), 0보다 커야 합니다.")
+    weight: float = Field(gt=0, multiple_of=0.1, description="몸무게(kg), 소수점 첫째 자리까지")
+    height: float = Field(gt=0, multiple_of=0.1, description="키(cm), 소수점 첫째 자리까지")
     systolic: int = Field(ge=0, le=250, description="수축기 혈압, 0~250")
     diastolic: int = Field(ge=0, le=250, description="이완기 혈압, 0~250")
     blood_sugar: int = Field(ge=0, le=1000, description="공복 혈당, 0~1000")
     steps: int = Field(default=0, ge=0, le=100000000, description="걸음 수, 0~100000000")
-    sleep_hours: float = Field(default=0.0, ge=0, description="수면 시간, 0 이상이어야 합니다.")
+    sleep_hours: float = Field(default=0.0, ge=0, multiple_of=0.1, description="수면 시간, 소수점 첫째 자리까지")
     memo: str = ""
 
     @field_validator("date")
@@ -1900,6 +1915,20 @@ def dashboard(request: Request):
                     if (integerOnly) value = Math.trunc(value);
                     value = Math.max(min, Math.min(max, value));
                     input.value = String(value);
+                });
+            });
+            document.querySelectorAll('input[type="number"]').forEach(input => {
+                const integerOnly = input.step !== '0.1';
+                input.addEventListener('keydown', event => {
+                    if (['-', '+', 'e', 'E'].includes(event.key)) event.preventDefault();
+                    if (event.key === '.' && (integerOnly || input.value === '' || input.value.includes('.'))) event.preventDefault();
+                });
+                input.addEventListener('input', () => {
+                    let value = input.value.replace(/[^0-9.]/g, '');
+                    if (value.startsWith('.')) value = value.slice(1);
+                    const pieces = value.split('.');
+                    value = pieces[0] + (pieces.length > 1 && !integerOnly ? '.' + pieces[1].slice(0, 1) : '');
+                    input.value = value;
                 });
             });
 

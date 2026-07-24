@@ -82,6 +82,18 @@ def init_db():
         )
     """)
 
+    # 기존 DB에도 사용자 연결 컬럼을 안전하게 추가합니다.
+    record_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(records)").fetchall()
+    }
+    if "user_id" not in record_columns:
+        connection.execute("ALTER TABLE records ADD COLUMN user_id INTEGER")
+
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_records_user_id ON records(user_id)"
+    )
+
     connection.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,6 +171,16 @@ def get_session_user(request: Request):
         return None
 
 
+def require_session_user(request: Request):
+    user = get_session_user(request)
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="로그인이 필요한 기능입니다."
+        )
+    return user
+
+
 def auth_page(mode: str) -> str:
     is_login = mode == "login"
     title = "다시 만나서 반가워요" if is_login else "건강한 기록을 시작해요"
@@ -212,10 +234,21 @@ def signup(payload: SignupIn):
     username = payload.username.strip()
     connection = get_connection()
     try:
+        existing_user_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM users"
+        ).fetchone()["count"]
         cursor = connection.execute(
             "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
             (username, email, hash_password(payload.password))
         )
+
+        # 인증 기능을 추가하기 전부터 있던 기록은 첫 계정의 기록으로 연결합니다.
+        if existing_user_count == 0:
+            connection.execute(
+                "UPDATE records SET user_id = ? WHERE user_id IS NULL",
+                (cursor.lastrowid,)
+            )
+
         connection.commit()
         return {"message": "회원가입이 완료되었습니다.", "user_id": cursor.lastrowid}
     except sqlite3.IntegrityError:
@@ -417,8 +450,9 @@ def read_root():
     description="건강 기록을 SQLite 데이터베이스에 저장하고 건강 상태를 자동으로 분석합니다.",
     tags=["건강 기록"]
 )
-def create_record(record: RecordIn):
+def create_record(record: RecordIn, request: Request):
     analysis = analyze_record(record)
+    user = require_session_user(request)
 
     connection = get_connection()
 
@@ -438,9 +472,10 @@ def create_record(record: RecordIn):
             bmi_category,
             bp_category,
             sugar_category,
-            warnings
+            warnings,
+            user_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.date,
@@ -459,7 +494,8 @@ def create_record(record: RecordIn):
             json.dumps(
                 analysis["warnings"],
                 ensure_ascii=False
-            )
+            ),
+            user["id"]
         )
     )
 
@@ -468,8 +504,8 @@ def create_record(record: RecordIn):
     new_id = cursor.lastrowid
 
     row = connection.execute(
-        "SELECT * FROM records WHERE id = ?",
-        (new_id,)
+        "SELECT * FROM records WHERE id = ? AND user_id = ?",
+        (new_id, user["id"])
     ).fetchone()
 
     save_json_snapshot(connection)
@@ -489,11 +525,13 @@ def create_record(record: RecordIn):
     description="저장된 모든 건강 기록과 전체 개수를 반환합니다.",
     tags=["건강 기록"]
 )
-def get_records():
+def get_records(request: Request):
     connection = get_connection()
+    user = require_session_user(request)
 
     rows = connection.execute(
-        "SELECT * FROM records ORDER BY id"
+        "SELECT * FROM records WHERE user_id = ? ORDER BY id",
+        (user["id"],)
     ).fetchall()
 
     connection.close()
@@ -516,12 +554,13 @@ def get_records():
     description="ID를 이용해 건강 기록 하나를 조회합니다.",
     tags=["건강 기록"]
 )
-def get_record(record_id: int):
+def get_record(record_id: int, request: Request):
     connection = get_connection()
+    user = require_session_user(request)
 
     row = connection.execute(
-        "SELECT * FROM records WHERE id = ?",
-        (record_id,)
+        "SELECT * FROM records WHERE id = ? AND user_id = ?",
+        (record_id, user["id"])
     ).fetchone()
 
     connection.close()
@@ -545,14 +584,15 @@ def get_record(record_id: int):
     description="기존 건강 기록을 수정하고 BMI와 건강 분류를 다시 계산합니다.",
     tags=["건강 기록"]
 )
-def update_record(record_id: int, record: RecordIn):
+def update_record(record_id: int, record: RecordIn, request: Request):
     analysis = analyze_record(record)
+    user = require_session_user(request)
 
     connection = get_connection()
 
     existing_row = connection.execute(
-        "SELECT * FROM records WHERE id = ?",
-        (record_id,)
+        "SELECT * FROM records WHERE id = ? AND user_id = ?",
+        (record_id, user["id"])
     ).fetchone()
 
     if existing_row is None:
@@ -581,7 +621,7 @@ def update_record(record_id: int, record: RecordIn):
             bp_category = ?,
             sugar_category = ?,
             warnings = ?
-        WHERE id = ?
+        WHERE id = ? AND user_id = ?
         """,
         (
             record.date,
@@ -601,15 +641,16 @@ def update_record(record_id: int, record: RecordIn):
                 analysis["warnings"],
                 ensure_ascii=False
             ),
-            record_id
+            record_id,
+            user["id"]
         )
     )
 
     connection.commit()
 
     updated_row = connection.execute(
-        "SELECT * FROM records WHERE id = ?",
-        (record_id,)
+        "SELECT * FROM records WHERE id = ? AND user_id = ?",
+        (record_id, user["id"])
     ).fetchone()
 
     save_json_snapshot(connection)
@@ -629,12 +670,13 @@ def update_record(record_id: int, record: RecordIn):
     description="ID를 이용해 건강 기록 하나를 삭제합니다.",
     tags=["건강 기록"]
 )
-def delete_record(record_id: int):
+def delete_record(record_id: int, request: Request):
     connection = get_connection()
+    user = require_session_user(request)
 
     row = connection.execute(
-        "SELECT * FROM records WHERE id = ?",
-        (record_id,)
+        "SELECT * FROM records WHERE id = ? AND user_id = ?",
+        (record_id, user["id"])
     ).fetchone()
 
     if row is None:
@@ -646,8 +688,8 @@ def delete_record(record_id: int):
         )
 
     connection.execute(
-        "DELETE FROM records WHERE id = ?",
-        (record_id,)
+        "DELETE FROM records WHERE id = ? AND user_id = ?",
+        (record_id, user["id"])
     )
 
     connection.commit()
@@ -670,7 +712,7 @@ def delete_record(record_id: int):
     description="시작 날짜와 종료 날짜 사이의 건강 기록을 검색합니다.",
     tags=["검색"]
 )
-def search_records(start: str, end: str):
+def search_records(start: str, end: str, request: Request):
     try:
         start_date = date_type.fromisoformat(start)
         end_date = date_type.fromisoformat(end)
@@ -687,14 +729,15 @@ def search_records(start: str, end: str):
         )
 
     connection = get_connection()
+    user = require_session_user(request)
 
     rows = connection.execute(
         """
         SELECT * FROM records
-        WHERE date >= ? AND date <= ?
+        WHERE user_id = ? AND date >= ? AND date <= ?
         ORDER BY date, id
         """,
-        (start, end)
+        (user["id"], start, end)
     ).fetchall()
 
     connection.close()
@@ -719,8 +762,9 @@ def search_records(start: str, end: str):
     description="저장된 기록의 개수, 평균값, 분류별 개수를 반환합니다.",
     tags=["통계"]
 )
-def get_stats():
+def get_stats(request: Request):
     connection = get_connection()
+    user = require_session_user(request)
 
     summary_row = connection.execute(
         """
@@ -736,12 +780,14 @@ def get_stats():
             MIN(date) AS earliest_date,
             MAX(date) AS latest_date
         FROM records
+        WHERE user_id = ?
         """
-    ).fetchone()
+    , (user["id"],)).fetchone()
 
     def count_by(column):
         rows = connection.execute(
-            f"SELECT {column} AS category, COUNT(*) AS count FROM records GROUP BY {column}"
+            f"SELECT {column} AS category, COUNT(*) AS count FROM records WHERE user_id = ? GROUP BY {column}",
+            (user["id"],)
         ).fetchall()
         return {row["category"]: row["count"] for row in rows}
 

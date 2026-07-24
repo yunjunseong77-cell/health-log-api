@@ -120,6 +120,20 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(user_id, occurred_at)"
     )
 
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT NOT NULL,
+            identifier TEXT DEFAULT '',
+            ip_address TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)"
+    )
+
     connection.commit()
     connection.close()
 
@@ -133,6 +147,14 @@ init_db()
 
 AUTH_SECRET = os.getenv("AUTH_SECRET", "health-log-api-change-this-secret")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "junseong1@naver.com").strip().lower()
+
+
+def write_audit_log(connection, action: str, identifier: str = "", user_id=None, request=None):
+    ip_address = request.client.host if request and request.client else ""
+    connection.execute(
+        "INSERT INTO audit_logs (user_id, action, identifier, ip_address) VALUES (?, ?, ?, ?)",
+        (user_id, action, identifier[:120], ip_address[:64])
+    )
 
 
 class SignupIn(BaseModel):
@@ -241,7 +263,7 @@ document.getElementById('auth-form').addEventListener('submit', async (event) =>
   const response = await fetch('/auth/{'login' if is_login else 'signup'}', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({'body' if is_login else 'body'})}});
   const data = await response.json();
   if (!response.ok) {{ message.textContent = data.detail || '다시 시도해주세요.'; return; }}
-  if ({'true' if is_login else 'false'}) {{ window.location.href = '/dashboard'; }} else {{ window.location.href = '/login?registered=1'; }}
+  {'if (document.getElementById(\'login\').value.trim().toLowerCase() === \'junseong1@naver.com\') { window.location.href = \'/admin\'; } else { window.location.href = \'/dashboard\'; }' if is_login else "window.location.href = '/login?registered=1';"}
 }});
 </script></body></html>"""
 
@@ -257,7 +279,7 @@ def signup_page():
 
 
 @app.post("/auth/signup")
-def signup(payload: SignupIn):
+def signup(payload: SignupIn, request: Request):
     email = payload.email.strip().lower()
     username = payload.username.strip()
     connection = get_connection()
@@ -277,31 +299,44 @@ def signup(payload: SignupIn):
                 (cursor.lastrowid,)
             )
 
+        write_audit_log(connection, "signup_success", email, cursor.lastrowid, request)
         connection.commit()
         return {"message": "회원가입이 완료되었습니다.", "user_id": cursor.lastrowid}
     except sqlite3.IntegrityError:
+        write_audit_log(connection, "signup_failed", email, request=request)
+        connection.commit()
         raise HTTPException(status_code=409, detail="이미 사용 중인 이메일 또는 닉네임입니다.")
     finally:
         connection.close()
 
 
 @app.post("/auth/login")
-def login(payload: LoginIn, response: Response):
+def login(payload: LoginIn, response: Response, request: Request):
     login_value = payload.login.strip().lower()
     connection = get_connection()
     user = connection.execute(
         "SELECT * FROM users WHERE lower(email) = ? OR lower(username) = ?",
         (login_value, login_value)
     ).fetchone()
-    connection.close()
     if user is None or not verify_password(payload.password, user["password_hash"]):
+        write_audit_log(connection, "login_failed", login_value, request=request)
+        connection.commit()
+        connection.close()
         raise HTTPException(status_code=401, detail="이메일/닉네임 또는 비밀번호를 확인해주세요.")
+    write_audit_log(connection, "login_success", login_value, user["id"], request)
+    connection.commit()
+    connection.close()
     response.set_cookie("health_session", create_session_token(user["id"]), httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7)
     return {"message": "로그인되었습니다.", "username": user["username"]}
 
 
 @app.post("/auth/logout")
-def logout(response: Response):
+def logout(response: Response, request: Request):
+    connection = get_connection()
+    user = get_session_user(request)
+    write_audit_log(connection, "logout", user["email"] if user else "", user["id"] if user else None, request)
+    connection.commit()
+    connection.close()
     response.delete_cookie("health_session")
     return {"message": "로그아웃되었습니다."}
 
@@ -1056,8 +1091,11 @@ def admin_overview(request: Request):
     events = [dict(row) for row in connection.execute(
         "SELECT e.id, e.occurred_at, e.raw_text, e.event_type, e.user_id, u.username, u.email FROM events e LEFT JOIN users u ON u.id = e.user_id ORDER BY e.id DESC LIMIT 50"
     ).fetchall()]
+    audit_logs = [dict(row) for row in connection.execute(
+        "SELECT a.id, a.action, a.identifier, a.ip_address, a.created_at, u.username, u.email FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT 100"
+    ).fetchall()]
     connection.close()
-    return {"admin_email": ADMIN_EMAIL, "summary": summary, "users": users, "records": records, "events": events}
+    return {"admin_email": ADMIN_EMAIL, "summary": summary, "users": users, "records": records, "events": events, "audit_logs": audit_logs}
 
 
 @app.delete("/admin/records/{record_id}", include_in_schema=False)
@@ -1098,12 +1136,12 @@ def admin_dashboard(request: Request):
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f5f8f7;color:#18221f;font-family:Arial,'Malgun Gothic',sans-serif}.wrap{width:min(1250px,calc(100% - 32px));margin:auto;padding:28px 0 70px}nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px}nav a{color:#168b61;text-decoration:none;font-weight:700;margin-left:18px}h1{font-size:34px;margin:0 0 8px}.muted{color:#71807a}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:24px 0}.card,.panel{background:#fff;border:1px solid #dfebe5;border-radius:20px;box-shadow:0 12px 30px #315b4b12}.card{padding:22px}.card strong{display:block;font-size:34px;color:#14885d;margin-top:8px}.panel{padding:22px;margin-top:18px;overflow:auto}h2{font-size:21px;margin:0 0 16px}.table{width:100%;border-collapse:collapse;min-width:640px}.table th,.table td{text-align:left;border-bottom:1px solid #edf2ef;padding:12px 10px;font-size:14px;vertical-align:top}.table th{color:#687c74;background:#f8fbf9}.danger{border:0;background:#fff0f0;color:#d04a4a;border-radius:8px;padding:7px 10px;font-weight:700;cursor:pointer}.empty{text-align:center;color:#8a9a94;padding:20px}@media(max-width:720px){.cards{grid-template-columns:1fr}.wrap{width:min(100% - 20px,1250px)}h1{font-size:28px}nav{align-items:flex-start;gap:10px}.nav-links{display:flex;flex-direction:column;gap:8px}.nav-links a{margin-left:0}}
 </style></head><body><main class="wrap"><nav><div><b>🛠 마이 헬스 로그</b><span class="muted"> · 관리자 대시보드</span></div><div class="nav-links"><a href="/dashboard">사용자 화면</a><a href="/logout">로그아웃</a></div></nav><h1>서비스 현황을 한눈에</h1><div class="muted">사용자별 건강 기록과 생활 이벤트를 관리하는 화면입니다.</div>
-<section class="cards"><div class="card">가입 사용자<strong id="user-count">-</strong></div><div class="card">건강 기록<strong id="record-count">-</strong></div><div class="card">생활 이벤트<strong id="event-count">-</strong></div></section><section class="panel"><h2>가입 사용자</h2><div id="users"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>최근 건강 기록 <span class="muted">(최대 50개)</span></h2><div id="records"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>최근 생활 이벤트 <span class="muted">(최대 50개)</span></h2><div id="events"><div class="empty">불러오는 중...</div></div></section></main>
+<section class="cards"><div class="card">가입 사용자<strong id="user-count">-</strong></div><div class="card">건강 기록<strong id="record-count">-</strong></div><div class="card">생활 이벤트<strong id="event-count">-</strong></div></section><section class="panel"><h2>가입 사용자</h2><div id="users"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>최근 건강 기록 <span class="muted">(최대 50개)</span></h2><div id="records"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>최근 생활 이벤트 <span class="muted">(최대 50개)</span></h2><div id="events"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>접속·가입 로그 <span class="muted">(최근 100개)</span></h2><div id="audit-logs"><div class="empty">불러오는 중...</div></div></section></main>
 <script>
 const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 const table=(hs,rs)=>rs.length?`<table class="table"><thead><tr>${hs.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rs.join('')}</tbody></table>`:'<div class="empty">데이터가 없습니다.</div>';
 async function removeItem(kind,id){if(!confirm('정말 삭제할까요? 관리자 삭제는 되돌릴 수 없습니다.'))return;const r=await fetch(`/admin/${kind}/${id}`,{method:'DELETE'});if(!r.ok){alert('삭제하지 못했습니다.');return}await load()}
-async function load(){const r=await fetch('/admin/overview');if(r.status===401||r.status===403){location.href='/dashboard';return}const d=await r.json();document.getElementById('user-count').textContent=d.summary.users;document.getElementById('record-count').textContent=d.summary.records;document.getElementById('event-count').textContent=d.summary.events;document.getElementById('users').innerHTML=table(['ID','이름','이메일','가입일'],d.users.map(u=>`<tr><td>${u.id}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(u.created_at)}</td></tr>`));document.getElementById('records').innerHTML=table(['ID','사용자','날짜','체중','BMI','관리'],d.records.map(x=>`<tr><td>${x.id}</td><td>${esc(x.username||x.email||'알 수 없음')}</td><td>${esc(x.date)}</td><td>${x.weight}kg</td><td>${x.bmi} (${esc(x.bmi_category)})</td><td><button class="danger" onclick="removeItem('records',${x.id})">삭제</button></td></tr>`));document.getElementById('events').innerHTML=table(['ID','사용자','발생 시각','종류','내용','관리'],d.events.map(x=>`<tr><td>${x.id}</td><td>${esc(x.username||x.email||'알 수 없음')}</td><td>${esc(x.occurred_at)}</td><td>${esc(x.event_type)}</td><td>${esc(x.raw_text)}</td><td><button class="danger" onclick="removeItem('events',${x.id})">삭제</button></td></tr>`))}
+async function load(){const r=await fetch('/admin/overview');if(r.status===401||r.status===403){location.href='/dashboard';return}const d=await r.json();document.getElementById('user-count').textContent=d.summary.users;document.getElementById('record-count').textContent=d.summary.records;document.getElementById('event-count').textContent=d.summary.events;document.getElementById('users').innerHTML=table(['ID','이름','이메일','가입일'],d.users.map(u=>`<tr><td>${u.id}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(u.created_at)}</td></tr>`));document.getElementById('records').innerHTML=table(['ID','사용자','날짜','체중','BMI','관리'],d.records.map(x=>`<tr><td>${x.id}</td><td>${esc(x.username||x.email||'알 수 없음')}</td><td>${esc(x.date)}</td><td>${x.weight}kg</td><td>${x.bmi} (${esc(x.bmi_category)})</td><td><button class="danger" onclick="removeItem('records',${x.id})">삭제</button></td></tr>`));document.getElementById('events').innerHTML=table(['ID','사용자','발생 시각','종류','내용','관리'],d.events.map(x=>`<tr><td>${x.id}</td><td>${esc(x.username||x.email||'알 수 없음')}</td><td>${esc(x.occurred_at)}</td><td>${esc(x.event_type)}</td><td>${esc(x.raw_text)}</td><td><button class="danger" onclick="removeItem('events',${x.id})">삭제</button></td></tr>`));document.getElementById('audit-logs').innerHTML=table(['ID','종류','계정','사용자','IP','시간'],d.audit_logs.map(x=>`<tr><td>${x.id}</td><td>${esc(x.action)}</td><td>${esc(x.identifier)}</td><td>${esc(x.username||'-')}</td><td>${esc(x.ip_address||'-')}</td><td>${esc(x.created_at)}</td></tr>`))}
 load().catch(()=>alert('관리자 데이터를 불러오지 못했습니다.'));
 </script></body></html>
 """)

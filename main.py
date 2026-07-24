@@ -132,6 +132,7 @@ init_db()
 # -----------------------------
 
 AUTH_SECRET = os.getenv("AUTH_SECRET", "health-log-api-change-this-secret")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "junseong1@naver.com").strip().lower()
 
 
 class SignupIn(BaseModel):
@@ -194,6 +195,17 @@ def require_session_user(request: Request):
             status_code=401,
             detail="로그인이 필요한 기능입니다."
         )
+    return user
+
+
+def is_admin(user) -> bool:
+    return user is not None and user["email"].strip().lower() == ADMIN_EMAIL
+
+
+def require_admin(request: Request):
+    user = require_session_user(request)
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
     return user
 
 
@@ -1017,6 +1029,84 @@ def delete_event(event_id: int, request: Request):
     connection.commit()
     connection.close()
     return {"message": "이벤트가 삭제되었습니다.", "event": row_to_event(row)}
+
+
+@app.get("/admin/overview", include_in_schema=False)
+def admin_overview(request: Request):
+    require_admin(request)
+    connection = get_connection()
+    summary = {
+        "users": connection.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+        "records": connection.execute("SELECT COUNT(*) FROM records").fetchone()[0],
+        "events": connection.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+    }
+    users = [dict(row) for row in connection.execute(
+        "SELECT id, username, email, created_at FROM users ORDER BY id DESC LIMIT 50"
+    ).fetchall()]
+    records = []
+    for row in connection.execute(
+        "SELECT r.*, u.username, u.email FROM records r LEFT JOIN users u ON u.id = r.user_id ORDER BY r.id DESC LIMIT 50"
+    ).fetchall():
+        item = row_to_record(row)
+        records.append({
+            "id": item["id"], "date": item["date"], "weight": item["weight"],
+            "bmi": item["bmi"], "bmi_category": item["bmi_category"],
+            "username": item["username"], "email": item["email"]
+        })
+    events = [dict(row) for row in connection.execute(
+        "SELECT e.id, e.occurred_at, e.raw_text, e.event_type, e.user_id, u.username, u.email FROM events e LEFT JOIN users u ON u.id = e.user_id ORDER BY e.id DESC LIMIT 50"
+    ).fetchall()]
+    connection.close()
+    return {"admin_email": ADMIN_EMAIL, "summary": summary, "users": users, "records": records, "events": events}
+
+
+@app.delete("/admin/records/{record_id}", include_in_schema=False)
+def admin_delete_record(record_id: int, request: Request):
+    require_admin(request)
+    connection = get_connection()
+    row = connection.execute("SELECT id FROM records WHERE id = ?", (record_id,)).fetchone()
+    if row is None:
+        connection.close()
+        raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+    connection.execute("DELETE FROM records WHERE id = ?", (record_id,))
+    connection.commit()
+    save_json_snapshot(connection)
+    connection.close()
+    return {"message": "관리자 권한으로 기록을 삭제했습니다.", "record_id": record_id}
+
+
+@app.delete("/admin/events/{event_id}", include_in_schema=False)
+def admin_delete_event(event_id: int, request: Request):
+    require_admin(request)
+    connection = get_connection()
+    row = connection.execute("SELECT id FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        connection.close()
+        raise HTTPException(status_code=404, detail="이벤트를 찾을 수 없습니다.")
+    connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
+    connection.commit()
+    connection.close()
+    return {"message": "관리자 권한으로 이벤트를 삭제했습니다.", "event_id": event_id}
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+def admin_dashboard(request: Request):
+    require_admin(request)
+    return HTMLResponse("""
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>관리자 대시보드 · 마이 헬스 로그</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f8f7;color:#18221f;font-family:Arial,'Malgun Gothic',sans-serif}.wrap{width:min(1250px,calc(100% - 32px));margin:auto;padding:28px 0 70px}nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px}nav a{color:#168b61;text-decoration:none;font-weight:700;margin-left:18px}h1{font-size:34px;margin:0 0 8px}.muted{color:#71807a}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:24px 0}.card,.panel{background:#fff;border:1px solid #dfebe5;border-radius:20px;box-shadow:0 12px 30px #315b4b12}.card{padding:22px}.card strong{display:block;font-size:34px;color:#14885d;margin-top:8px}.panel{padding:22px;margin-top:18px;overflow:auto}h2{font-size:21px;margin:0 0 16px}.table{width:100%;border-collapse:collapse;min-width:640px}.table th,.table td{text-align:left;border-bottom:1px solid #edf2ef;padding:12px 10px;font-size:14px;vertical-align:top}.table th{color:#687c74;background:#f8fbf9}.danger{border:0;background:#fff0f0;color:#d04a4a;border-radius:8px;padding:7px 10px;font-weight:700;cursor:pointer}.empty{text-align:center;color:#8a9a94;padding:20px}@media(max-width:720px){.cards{grid-template-columns:1fr}.wrap{width:min(100% - 20px,1250px)}h1{font-size:28px}nav{align-items:flex-start;gap:10px}.nav-links{display:flex;flex-direction:column;gap:8px}.nav-links a{margin-left:0}}
+</style></head><body><main class="wrap"><nav><div><b>🛠 마이 헬스 로그</b><span class="muted"> · 관리자 대시보드</span></div><div class="nav-links"><a href="/dashboard">사용자 화면</a><a href="/logout">로그아웃</a></div></nav><h1>서비스 현황을 한눈에</h1><div class="muted">사용자별 건강 기록과 생활 이벤트를 관리하는 화면입니다.</div>
+<section class="cards"><div class="card">가입 사용자<strong id="user-count">-</strong></div><div class="card">건강 기록<strong id="record-count">-</strong></div><div class="card">생활 이벤트<strong id="event-count">-</strong></div></section><section class="panel"><h2>가입 사용자</h2><div id="users"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>최근 건강 기록 <span class="muted">(최대 50개)</span></h2><div id="records"><div class="empty">불러오는 중...</div></div></section><section class="panel"><h2>최근 생활 이벤트 <span class="muted">(최대 50개)</span></h2><div id="events"><div class="empty">불러오는 중...</div></div></section></main>
+<script>
+const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
+const table=(hs,rs)=>rs.length?`<table class="table"><thead><tr>${hs.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rs.join('')}</tbody></table>`:'<div class="empty">데이터가 없습니다.</div>';
+async function removeItem(kind,id){if(!confirm('정말 삭제할까요? 관리자 삭제는 되돌릴 수 없습니다.'))return;const r=await fetch(`/admin/${kind}/${id}`,{method:'DELETE'});if(!r.ok){alert('삭제하지 못했습니다.');return}await load()}
+async function load(){const r=await fetch('/admin/overview');if(r.status===401||r.status===403){location.href='/dashboard';return}const d=await r.json();document.getElementById('user-count').textContent=d.summary.users;document.getElementById('record-count').textContent=d.summary.records;document.getElementById('event-count').textContent=d.summary.events;document.getElementById('users').innerHTML=table(['ID','이름','이메일','가입일'],d.users.map(u=>`<tr><td>${u.id}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(u.created_at)}</td></tr>`));document.getElementById('records').innerHTML=table(['ID','사용자','날짜','체중','BMI','관리'],d.records.map(x=>`<tr><td>${x.id}</td><td>${esc(x.username||x.email||'알 수 없음')}</td><td>${esc(x.date)}</td><td>${x.weight}kg</td><td>${x.bmi} (${esc(x.bmi_category)})</td><td><button class="danger" onclick="removeItem('records',${x.id})">삭제</button></td></tr>`));document.getElementById('events').innerHTML=table(['ID','사용자','발생 시각','종류','내용','관리'],d.events.map(x=>`<tr><td>${x.id}</td><td>${esc(x.username||x.email||'알 수 없음')}</td><td>${esc(x.occurred_at)}</td><td>${esc(x.event_type)}</td><td>${esc(x.raw_text)}</td><td><button class="danger" onclick="removeItem('events',${x.id})">삭제</button></td></tr>`))}
+load().catch(()=>alert('관리자 데이터를 불러오지 못했습니다.'));
+</script></body></html>
+""")
 
 
 @app.get("/welcome", response_class=HTMLResponse, include_in_schema=False)

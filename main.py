@@ -1886,6 +1886,23 @@ def dashboard(request: Request):
                 `).join('');
             }
 
+            const profileInputLimits = {
+                'profile-age': [1, 150, true],
+                'profile-height': [50, 250, false],
+                'profile-weight': [0.0001, 499.9, false]
+            };
+            Object.entries(profileInputLimits).forEach(([id, [min, max, integerOnly]]) => {
+                const input = document.getElementById(id);
+                input.addEventListener('input', () => {
+                    if (input.value === '') return;
+                    let value = Number(input.value);
+                    if (!Number.isFinite(value)) { input.value = ''; return; }
+                    if (integerOnly) value = Math.trunc(value);
+                    value = Math.max(min, Math.min(max, value));
+                    input.value = String(value);
+                });
+            });
+
             async function loadProfile() {
                 const response = await fetch('/profile');
                 if (!response.ok) return;
@@ -1901,6 +1918,15 @@ def dashboard(request: Request):
             document.getElementById('profile-form').addEventListener('submit', async event => {
                 event.preventDefault();
                 const message = document.getElementById('profile-message');
+                const ageValue = document.getElementById('profile-age').value;
+                const heightValue = document.getElementById('profile-height').value;
+                const weightValue = document.getElementById('profile-weight').value;
+                if (ageValue && (!Number.isInteger(Number(ageValue)) || Number(ageValue) < 1 || Number(ageValue) > 150) ||
+                    heightValue && (Number(heightValue) < 50 || Number(heightValue) > 250) ||
+                    weightValue && (Number(weightValue) <= 0 || Number(weightValue) >= 500)) {
+                    message.textContent = '나이·키·몸무게의 허용 범위를 확인해주세요.';
+                    return;
+                }
                 const response = await fetch('/profile', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
                     gender: document.getElementById('profile-gender').value || null,
                     age: Number(document.getElementById('profile-age').value) || null,

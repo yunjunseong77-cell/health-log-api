@@ -1051,16 +1051,16 @@ def dashboard(request: Request):
             @import url('https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;500;700&display=swap');
 
             :root {
-                --ink: #403b5c;
-                --muted: #827b9d;
-                --purple: #8b7cf6;
-                --purple-dark: #6655d8;
-                --lavender: #f2efff;
-                --peach: #fff0e8;
-                --mint: #e8fbf3;
-                --yellow: #fff8d9;
+                --ink: #18221f;
+                --muted: #71807a;
+                --purple: #1fae76;
+                --purple-dark: #137653;
+                --lavender: #f1f7f4;
+                --peach: #faf5ee;
+                --mint: #eaf7f0;
+                --yellow: #f8f6ee;
                 --white: #ffffff;
-                --shadow: 0 18px 50px rgba(91, 76, 161, 0.13);
+                --shadow: 0 16px 40px rgba(29, 57, 46, 0.08);
             }
 
             * { box-sizing: border-box; }
@@ -1069,10 +1069,7 @@ def dashboard(request: Request):
                 margin: 0;
                 color: var(--ink);
                 font-family: 'Noto Sans KR', sans-serif;
-                background:
-                    radial-gradient(circle at 10% 5%, #fff3cf 0 9%, transparent 26%),
-                    radial-gradient(circle at 92% 12%, #e8e3ff 0 10%, transparent 28%),
-                    #fbfaff;
+                background: #f6f8f7;
             }
 
             .wrap { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 60px; }
@@ -1083,8 +1080,9 @@ def dashboard(request: Request):
                 justify-content: space-between;
                 gap: 24px;
                 padding: 34px 38px;
-                border-radius: 30px;
-                background: linear-gradient(135deg, #e7e2ff, #fff0df);
+                border-radius: 24px;
+                color: white;
+                background: #17251f;
                 box-shadow: var(--shadow);
                 overflow: hidden;
                 position: relative;
@@ -1100,15 +1098,15 @@ def dashboard(request: Request):
                 transform: rotate(18deg);
             }
 
-            h1, h2, h3 { margin: 0; font-family: 'Jua', sans-serif; font-weight: 400; }
-            h1 { font-size: clamp(32px, 5vw, 52px); letter-spacing: -1px; }
-            h2 { font-size: 25px; }
-            .hero p { margin: 10px 0 0; color: var(--muted); font-size: 15px; }
-            .mascot { font-size: 88px; filter: drop-shadow(0 10px 8px rgba(88, 66, 153, .12)); }
+            h1, h2, h3 { margin: 0; font-weight: 750; letter-spacing: -.04em; }
+            h1 { font-size: clamp(32px, 5vw, 52px); }
+            h2 { font-size: 23px; }
+            .hero p { margin: 10px 0 0; color: #aebdb6; font-size: 15px; }
+            .mascot { font-size: 52px; color: #7ee0b1; }
             .hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; position: relative; z-index: 1; }
-            .logout-button { width: auto; margin: 0; padding: 9px 14px; color: var(--purple-dark); background: rgba(255,255,255,.82); box-shadow: none; font-size: 13px; }
+            .logout-button { width: auto; margin: 0; padding: 9px 14px; color: #18342b; background: #fff; box-shadow: none; font-size: 13px; }
             .logout-button:hover { background: #fff; box-shadow: 0 8px 18px rgba(102, 85, 216, .16); }
-            .quick-event { margin-top: 22px; background: linear-gradient(135deg, #ffffff, #f1fff8); }
+            .quick-event { margin-top: 22px; background: #fff; }
             .event-form { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; }
             .event-form select { border: 1px solid #e6e1f6; border-radius: 13px; padding: 11px 12px; color: var(--ink); background: #fff; font: inherit; }
             .event-form button { width: auto; margin: 0; padding: 11px 16px; }
@@ -1122,15 +1120,15 @@ def dashboard(request: Request):
             .event-delete:hover { color: #d45748; background: transparent; }
 
             .layout { display: grid; grid-template-columns: 360px 1fr; gap: 22px; margin-top: 22px; }
-            .card { background: rgba(255,255,255,.9); border: 1px solid #eeeafd; border-radius: 24px; padding: 24px; box-shadow: var(--shadow); }
+            .card { background: #fff; border: 1px solid #e5ebe8; border-radius: 20px; padding: 24px; box-shadow: var(--shadow); }
             .card-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
             .card-title span { font-size: 23px; }
 
             label { display: block; margin: 13px 0 6px; color: var(--muted); font-size: 13px; font-weight: 700; }
             input, textarea {
                 width: 100%;
-                border: 1px solid #e6e1f6;
-                border-radius: 13px;
+                border: 1px solid #dfe8e3;
+                border-radius: 10px;
                 padding: 11px 12px;
                 color: var(--ink);
                 background: #fff;
@@ -1138,23 +1136,23 @@ def dashboard(request: Request):
                 outline: none;
                 transition: .2s;
             }
-            input:focus, textarea:focus { border-color: var(--purple); box-shadow: 0 0 0 4px #eeeaff; }
+            input:focus, textarea:focus { border-color: var(--purple); box-shadow: 0 0 0 4px #dff4e9; }
             .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
             textarea { min-height: 70px; resize: vertical; }
             button {
                 width: 100%;
                 border: 0;
-                border-radius: 14px;
+                border-radius: 10px;
                 padding: 13px 16px;
                 margin-top: 18px;
                 color: white;
-                background: linear-gradient(135deg, var(--purple), var(--purple-dark));
-                box-shadow: 0 9px 18px rgba(102, 85, 216, .25);
+                background: #1fae76;
+                box-shadow: 0 8px 16px rgba(31, 174, 118, .18);
                 cursor: pointer;
                 font: 700 15px 'Noto Sans KR', sans-serif;
                 transition: transform .2s, box-shadow .2s;
             }
-            button:hover { transform: translateY(-2px); box-shadow: 0 12px 22px rgba(102, 85, 216, .3); }
+            button:hover { transform: translateY(-1px); box-shadow: 0 10px 20px rgba(31, 174, 118, .25); }
 
             .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
             .metric { min-height: 118px; border-radius: 18px; padding: 16px; }
@@ -1164,7 +1162,7 @@ def dashboard(request: Request):
             .metric:nth-child(4) { background: var(--yellow); }
             .metric .emoji { font-size: 24px; }
             .metric .label { margin-top: 9px; color: var(--muted); font-size: 12px; }
-            .metric .value { margin-top: 3px; font: 25px 'Jua', sans-serif; }
+            .metric .value { margin-top: 3px; font-size: 25px; font-weight: 750; }
 
             .records { margin-top: 22px; }
             .record { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 17px 0; border-bottom: 1px solid #f0edf8; }
@@ -1209,7 +1207,7 @@ def dashboard(request: Request):
                 </div>
                 <div class="hero-actions">
                     <button id="logout-button" class="logout-button" type="button">로그아웃</button>
-                    <div class="mascot">🐰</div>
+                    <div class="mascot">✦</div>
                 </div>
             </section>
 
@@ -1346,7 +1344,11 @@ def dashboard(request: Request):
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             const voiceButton = document.getElementById('voice-button');
-            if (SpeechRecognition) {
+            if (!window.isSecureContext) {
+                voiceButton.disabled = true;
+                voiceButton.textContent = '🔒 HTTPS에서 사용 가능';
+                eventMessage.textContent = '음성 입력은 HTTPS 연결에서만 사용할 수 있어요. 현재는 글로 기록해 주세요.';
+            } else if (SpeechRecognition) {
                 const recognition = new SpeechRecognition();
                 recognition.lang = 'ko-KR';
                 recognition.interimResults = false;
@@ -1359,7 +1361,7 @@ def dashboard(request: Request):
                     eventMessage.textContent = '내용을 확인하고 이벤트 저장하기를 눌러주세요.';
                     eventText.focus();
                 });
-                recognition.addEventListener('error', () => { eventMessage.textContent = '음성을 듣지 못했어요. 글로 입력해도 괜찮아요.'; });
+                recognition.addEventListener('error', () => { eventMessage.textContent = '음성을 듣지 못했어요. 브라우저의 마이크 권한을 확인해 주세요.'; });
             } else {
                 voiceButton.disabled = true;
                 voiceButton.textContent = '🎙️ 음성 미지원 브라우저';

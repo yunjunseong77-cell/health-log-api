@@ -11,7 +11,7 @@ import secrets
 import time
 import os
 from pathlib import Path
-from datetime import date as date_type, datetime
+from datetime import date as date_type, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -1120,6 +1120,70 @@ def delete_event(event_id: int, request: Request):
     return {"message": "이벤트가 삭제되었습니다.", "event": row_to_event(row)}
 
 
+@app.get("/patterns")
+def get_patterns(request: Request, days: int = 14):
+    """최근 기록을 바탕으로 AI 없이 계산하는 개인 생활 패턴 요약."""
+    user = require_session_user(request)
+    days = max(7, min(days, 30))
+    connection = get_connection()
+    records = [dict(row) for row in connection.execute(
+        "SELECT * FROM records WHERE user_id = ? ORDER BY date DESC",
+        (user["id"],)
+    ).fetchall()]
+    events = [dict(row) for row in connection.execute(
+        "SELECT * FROM events WHERE user_id = ? ORDER BY occurred_at DESC",
+        (user["id"],)
+    ).fetchall()]
+    connection.close()
+
+    cutoff = (datetime.now(KST).date() - timedelta(days=days - 1)).isoformat()
+    records = [row for row in records if row["date"] >= cutoff]
+    events = [row for row in events if row["occurred_at"][:10] >= cutoff]
+
+    def is_coffee(event):
+        text = f"{event['event_type']} {event['raw_text']}".lower()
+        return any(word in text for word in ("커피", "카페인", "아메리카노", "coffee"))
+
+    def is_meal(event):
+        text = f"{event['event_type']} {event['raw_text']}".lower()
+        return any(word in text for word in ("식사", "야식", "라면", "치킨", "배달", "간식"))
+
+    def is_exercise(event):
+        text = f"{event['event_type']} {event['raw_text']}".lower()
+        return any(word in text for word in ("운동", "걷", "달리", "헬스", "exercise"))
+
+    coffee_dates = {event["occurred_at"][:10] for event in events if is_coffee(event)}
+    meal_dates = {event["occurred_at"][:10] for event in events if is_meal(event)}
+    exercise_dates = {event["occurred_at"][:10] for event in events if is_exercise(event)}
+    sleep_with_coffee = [r["sleep_hours"] for r in records if r["date"] in coffee_dates and r["sleep_hours"] > 0]
+    sleep_without_coffee = [r["sleep_hours"] for r in records if r["date"] not in coffee_dates and r["sleep_hours"] > 0]
+    active_dates = exercise_dates | {r["date"] for r in records if r["steps"] >= 5000}
+    weight_active = [r["weight"] for r in records if r["date"] in active_dates]
+    weight_rest = [r["weight"] for r in records if r["date"] not in active_dates]
+
+    def average(values):
+        return round(sum(values) / len(values), 1) if values else None
+
+    patterns = []
+    if coffee_dates and sleep_with_coffee and sleep_without_coffee:
+        diff = round(average(sleep_without_coffee) - average(sleep_with_coffee), 1)
+        patterns.append({"emoji": "☕", "title": "커피와 수면", "summary": f"커피를 마신 날 수면이 평균 {diff}시간 {'짧아요' if diff > 0 else '달라요'}.", "detail": f"커피 기록 {len(coffee_dates)}일 · 커피 있는 날 {average(sleep_with_coffee)}시간 / 없는 날 {average(sleep_without_coffee)}시간"})
+    else:
+        patterns.append({"emoji": "☕", "title": "커피와 수면", "summary": "커피와 수면을 비교할 기록을 모으는 중이에요.", "detail": f"커피 기록 {len(coffee_dates)}일 · 수면 기록이 더 필요해요"})
+
+    if meal_dates:
+        patterns.append({"emoji": "🍜", "title": "식사 이벤트", "summary": f"최근 {days}일 동안 식사 관련 이벤트를 {len(meal_dates)}일 기록했어요.", "detail": "야식·간식도 빠르게 기록하면 다음 날 건강 기록과 비교할 수 있어요."})
+    else:
+        patterns.append({"emoji": "🍜", "title": "식사 이벤트", "summary": "식사나 야식 이벤트를 기록해보세요.", "detail": "이벤트가 쌓이면 날짜별 변화와 비교할 수 있어요."})
+
+    if active_dates and weight_active and weight_rest:
+        patterns.append({"emoji": "🏃", "title": "활동과 체중", "summary": f"활동한 날 평균 체중은 {average(weight_active)}kg이에요.", "detail": f"활동일 {len(active_dates)}일 · 기록이 없는 날 평균 {average(weight_rest)}kg"})
+    else:
+        patterns.append({"emoji": "🏃", "title": "활동과 체중", "summary": "운동이나 걸음 수 기록을 모으는 중이에요.", "detail": "5,000보 이상 또는 운동 이벤트가 있는 날을 활동일로 계산해요."})
+
+    return {"period_days": days, "record_count": len(records), "event_count": len(events), "patterns": patterns}
+
+
 @app.get("/admin/overview", include_in_schema=False)
 def admin_overview(request: Request):
     require_admin(request)
@@ -1428,6 +1492,12 @@ def dashboard(request: Request):
                 <div id="event-list" class="event-list"></div>
             </section>
 
+            <section class="card" style="margin-top:22px">
+                <div class="card-title"><div><h2>나의 생활 패턴</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">최근 기록을 바탕으로 계산한 개인별 경향이에요. 진단이 아닌 참고용입니다.</div></div><span>✨</span></div>
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px"><label for="pattern-days" style="margin:0">기간</label><select id="pattern-days"><option value="7">최근 7일</option><option value="14" selected>최근 14일</option><option value="30">최근 30일</option></select></div>
+                <div id="pattern-cards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px"><div class="empty">패턴을 계산하는 중...</div></div>
+            </section>
+
             <section class="card calendar-card">
                 <div class="card-title"><div><h2>날짜별 기록 보기</h2><div style="margin-top:5px;color:var(--muted);font-size:13px">날짜를 클릭하면 그날의 건강 기록과 생활 이벤트를 확인할 수 있어요.</div></div><span>▦</span></div>
                 <div class="calendar-toolbar"><strong id="calendar-month"></strong><div class="calendar-nav"><button id="prev-month" type="button">‹ 이전</button><button id="today-month" type="button">오늘</button><button id="next-month" type="button">다음 ›</button></div></div>
@@ -1699,6 +1769,19 @@ def dashboard(request: Request):
                 if (response.ok) await loadProfile();
             });
 
+            async function loadPatterns() {
+                const days = document.getElementById('pattern-days').value;
+                const response = await fetch(`/patterns?days=${days}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                document.getElementById('pattern-cards').innerHTML = data.patterns.map(pattern => `
+                    <article style="padding:16px;border:1px solid #e2eee8;border-radius:16px;background:#fbfefd">
+                        <div style="font-size:25px">${pattern.emoji}</div><strong style="display:block;margin:8px 0">${pattern.title}</strong>
+                        <div style="line-height:1.5">${pattern.summary}</div><small style="display:block;color:var(--muted);margin-top:8px;line-height:1.5">${pattern.detail}</small>
+                    </article>`).join('');
+            }
+            document.getElementById('pattern-days').addEventListener('change', loadPatterns);
+
             async function loadRecords() {
                 const response = await fetch('/records');
                 const payload = await response.json();
@@ -1803,6 +1886,7 @@ def dashboard(request: Request):
             });
 
             loadProfile().catch(() => {});
+            loadPatterns().catch(() => {});
             loadRecords().catch(() => {
                 document.getElementById('records').innerHTML = '<div class="empty">기록을 불러오지 못했어요.</div>';
             });
